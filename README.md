@@ -3,8 +3,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![NuGet](https://img.shields.io/nuget/v/MultiTierCache.svg?color=blue)](https://www.nuget.org/packages/MultiTierCache)
 [![NuGet Downloads](https://img.shields.io/nuget/dt/MultiTierCache.svg?color=blue)](https://www.nuget.org/packages/MultiTierCache)
-[![Build](https://github.com/eligo-social/eligo-cache/workflows/build/badge.svg)](https://github.com/eligo-social/eligo-cache/MultiTierCache/actions)
-[![Tests](https://github.com/eligo-social/eligo-cache/workflows/tests/badge.svg)](https://github.com/eligo-social/eligo-cache/actions)
 [![.NET 8.0+](https://img.shields.io/badge/.NET-8.0+-512bd4.svg)](https://dotnet.microsoft.com/download/dotnet/8.0)
 
 A production-ready **multi-tiered caching library** for ASP.NET Core with automatic tenant context injection, supporting multiple URL patterns and distributed cache backends.
@@ -61,8 +59,8 @@ app.UseMultiTierCache(
     @"/api/tenants/(?<tenant>[^/]+)",
     async (tenantId) =>
     {
-        var db = app.Services.GetRequiredService<ITenantDatabase>();
-        return await db.GetTenantAsync(tenantId);
+        var db = app.Services.GetRequiredService<ITenantService>();
+        return await db.GetTenantByIt(tenantId);
     }
 );
 
@@ -198,6 +196,7 @@ dotnet test  --collect:"XPlat Code Coverage"
 - [x] Core multi-tier caching
 - [x] Tenant context injection
 - [x] Multiple URL patterns
+- [x] Tenant Context Resolution from Authentication Token 
 - [x] Redis backend
 - [x] Hazelcast backend
 - [ ] OpenTelemetry metrics
