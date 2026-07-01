@@ -1,80 +1,9 @@
-using Microsoft.AspNetCore.Builder;
-using Microsoft.Extensions.DependencyInjection;
-using MultiTierCache.Core;
-using System;
-using System.Threading.Tasks;
-
-// Example tenant entity
-public class TenantInfo
-{
-    public string Id { get; set; }
-    public string Name { get; set; }
-    public string Region { get; set; }
-    public DateTime CreatedAt { get; set; }
-}
-
-// Example database service
-public interface ITenantDatabase
-{
-    Task<TenantInfo> GetTenantAsync(string tenantId);
-}
-
-public class TenantDatabase : ITenantDatabase
-{
-    // Simulate database call
-    public async Task<TenantInfo> GetTenantAsync(string tenantId)
-    {
-        await Task.Delay(100); // Simulate DB latency
-        return new TenantInfo
-        {
-            Id = tenantId,
-            Name = $"Tenant {tenantId}",
-            Region = "EU",
-            CreatedAt = DateTime.UtcNow
-        };
-    }
-}
-
-// Service that uses caching
-public interface ITenantService
-{
-    Task<TenantInfo> GetTenantWithCacheAsync(string tenantId);
-}
-
-public class TenantService : ITenantService
-{
-    private readonly ITenantCache _cache;
-    private readonly ITenantDatabase _database;
-
-    public TenantService(ITenantCache cache, ITenantDatabase database)
-    {
-        _cache = cache;
-        _database = database;
-    }
-
-    public async Task<TenantInfo> GetTenantWithCacheAsync(string tenantId)
-    {
-        var cacheKey = $"tenant-info:{tenantId}";
-
-        // Try to get from cache
-        var cached = await _cache.GetAsync<TenantInfo>(cacheKey);
-        if (cached != null)
-        {
-            return cached;
-        }
-
-        // Cache miss - fetch from database
-        var tenant = await _database.GetTenantAsync(tenantId);
-
-        // Store in cache
-        await _cache.SetAsync(cacheKey, tenant);
-
-        return tenant;
-    }
-}
-
 // ===== Program.cs Configuration =====
-var builder = WebApplicationBuilder.CreateBuilder(args);
+
+using MultiTierCache;
+using MultiTierCache.Examples;
+
+var builder = WebApplication.CreateBuilder(args);
 
 // Add services
 builder.Services.AddHttpContextAccessor();
@@ -83,14 +12,13 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddMultiTierCache(cache =>
 {
     cache
-        .WithL1TimeToLive(TimeSpan.FromMinutes(5))      // L1: 5 minutes in-memory
-        .WithL2TimeToLive(TimeSpan.FromHours(1))        // L2: 1 hour in Redis/Hazelcast
-        .WithRedisL2("localhost:6379");                  // Use Redis for L2
-        // .WithHazelcastL2("localhost:5701");           // Or use Hazelcast instead
+        .WithL1TimeToLive(TimeSpan.FromMinutes(5)) // L1: 5 minutes in-memory
+        .WithL2TimeToLive(TimeSpan.FromHours(1)) // L2: 1 hour in Redis/Hazelcast
+        .WithRedisL2("localhost:6379"); // Use Redis for L2
+    // .WithHazelcastL2("localhost:5701");           // Or use Hazelcast instead
 });
 
 // Register tenant database and service
-builder.Services.AddScoped<ITenantDatabase, TenantDatabase>();
 builder.Services.AddScoped<ITenantService, TenantService>();
 
 var app = builder.Build();
@@ -107,7 +35,7 @@ app.UseEndpoints(endpoints =>
         string tenantId,
         ITenantService tenantService) =>
     {
-        var tenant = await tenantService.GetTenantWithCacheAsync(tenantId);
+        var tenant = await tenantService.GetTenantByIdAsync(tenantId);
         return Results.Ok(tenant);
     });
 
@@ -117,7 +45,7 @@ app.UseEndpoints(endpoints =>
     {
         // Using ITenantCache directly - tenant context is automatic
         var cached = await cache.GetAsync<string>("my-key");
-        
+
         if (cached == null)
         {
             cached = $"Data for tenant {tenantId}";
@@ -141,9 +69,9 @@ app.Run();
 
 /*
  * ADVANCED USAGE EXAMPLES:
- * 
+ *
  * 1. Custom Tenant Resolver:
- * 
+ *
  *    public class CustomTenantResolver : ITenantResolver
  *    {
  *        public string ResolveTenant(HttpContext httpContext)
@@ -151,20 +79,20 @@ app.Run();
  *            // Extract tenant from header
  *            if (httpContext.Request.Headers.TryGetValue("X-Tenant-Id", out var tenantId))
  *                return tenantId.ToString();
- *            
+ *
  *            // Or from subdomain
  *            var host = httpContext.Request.Host.Host;
  *            var subdomain = host.Split('.')[0];
  *            return subdomain == "api" ? "default" : subdomain;
  *        }
  *    }
- *    
+ *
  *    In ConfigureServices:
  *    services.AddSingleton<ITenantResolver, CustomTenantResolver>();
- * 
- * 
+ *
+ *
  * 2. Batch Tenant Data Fetching with Cache:
- * 
+ *
  *    public class TenantService
  *    {
  *        public async Task<List<TenantInfo>> GetTenantsWithCacheAsync(List<string> tenantIds)
@@ -177,10 +105,10 @@ app.Run();
  *            return (await Task.WhenAll(tasks)).ToList();
  *        }
  *    }
- * 
- * 
+ *
+ *
  * 3. Cache Warming Strategy:
- * 
+ *
  *    public async Task WarmCacheAsync(List<string> tenantIds)
  *    {
  *        foreach (var tenantId in tenantIds)
@@ -189,32 +117,32 @@ app.Run();
  *            await _cache.SetAsync(tenantId, "info", tenant);
  *        }
  *    }
- * 
- * 
+ *
+ *
  * 4. Dependency-based Cache Invalidation:
- * 
+ *
  *    public async Task UpdateTenantAsync(string tenantId, TenantInfo tenant)
  *    {
  *        await _database.UpdateAsync(tenantId, tenant);
- *        
+ *
  *        // Invalidate related cache entries
  *        await _cache.RemoveAsync(tenantId, "info");
  *        await _cache.RemoveAsync(tenantId, "settings");
  *        await _cache.RemoveAsync(tenantId, "users-list");
  *    }
- * 
- * 
+ *
+ *
  * 5. URL Pattern Variations:
- * 
+ *
  *    // Subdomain-based: api.acme.example.com
  *    @"^(?<tenant>[^.]+)\.example\.com"
- *    
+ *
  *    // Header-based (use custom resolver):
  *    "X-Tenant-Id"
- *    
+ *
  *    // Path-based: /api/v1/tenants/acme/resources
  *    @"/api/v\d+/tenants/(?<tenant>[^/]+)"
- *    
+ *
  *    // Multi-segment: /api/customers/acme/region/us/
  *    @"/api/customers/(?<tenant>[^/]+)/region"
  */
