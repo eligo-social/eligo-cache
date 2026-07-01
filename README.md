@@ -3,8 +3,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![NuGet](https://img.shields.io/nuget/v/MultiTierCache.svg?color=blue)](https://www.nuget.org/packages/MultiTierCache)
 [![NuGet Downloads](https://img.shields.io/nuget/dt/MultiTierCache.svg?color=blue)](https://www.nuget.org/packages/MultiTierCache)
-[![Build](https://github.com/yourusername/MultiTierCache/workflows/build/badge.svg)](https://github.com/yourusername/MultiTierCache/actions)
-[![Tests](https://github.com/yourusername/MultiTierCache/workflows/tests/badge.svg)](https://github.com/yourusername/MultiTierCache/actions)
+[![Build](https://github.com/eligo-social/eligo-cache/workflows/build/badge.svg)](https://github.com/yourusername/MultiTierCache/actions)
+[![Tests](https://github.com/eligo-social/eligo-cache/workflows/tests/badge.svg)](https://github.com/yourusername/MultiTierCache/actions)
 [![.NET 8.0+](https://img.shields.io/badge/.NET-8.0+-512bd4.svg)](https://dotnet.microsoft.com/download/dotnet/8.0)
 
 A production-ready **multi-tiered caching library** for ASP.NET Core with automatic tenant context injection, supporting multiple URL patterns and distributed cache backends.
@@ -16,7 +16,7 @@ A production-ready **multi-tiered caching library** for ASP.NET Core with automa
   - L2: Distributed cache via Redis or Hazelcast (1 hour - 1 day TTL)
   - Automatic L1→L2 fallback on miss
 
-- **Tenant Resolution** (No Regex Required!)
+- **Tenant Resolution**
   - Route parameters (numeric IDs, string slugs)
   - HTTP headers
   - Subdomains
@@ -331,8 +331,8 @@ Built with ❤️ by Eligo eVoting inside the Lumi Lab Day Initiative
 
 ## 📞 Contact
 
-- **GitHub:** [@save_veltri](https://github.com/yourusername)
-- **Twitter:** [@save_veltri](https://twitter.com/yourhandle)
-- **LinkedIn:** [saveveltri](https://linkedin.com/in/yourprofile)
+- **GitHub:** [@save_veltri](https://github.com/save_veltri)
+- **Twitter:** [@save_veltri](https://twitter.com/save_Veltri)
+- **LinkedIn:** [saveveltri](https://linkedin.com/in/saveveltri)
 
 ---
