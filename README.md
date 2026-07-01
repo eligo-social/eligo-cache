@@ -28,13 +28,6 @@ A production-ready **multi-tiered caching library** for ASP.NET Core with automa
   - Zero additional database calls
   - Type-safe dependency injection
 
-- **Enterprise Ready**
-  - 100% unit test coverage
-  - Production-grade error handling
-  - Comprehensive logging support
-  - Docker & Kubernetes examples
-  - MIT Licensed
-
 ## 🚀 Quick Start
 
 ### 1. Install NuGet Package
@@ -48,7 +41,7 @@ dotnet add package MultiTierCache
 ```csharp
 using MultiTierCache.Core;
 
-var builder = WebApplicationBuilder.CreateBuilder(args);
+var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddHttpContextAccessor();
 
@@ -96,16 +89,6 @@ app.MapGet("/api/tenants/{tenantId}/users", (ITenantContextService context) =>
     });
 });
 ```
-
-## 📚 Documentation
-
-- **[Getting Started](./docs/01-GETTING_STARTED.md)** — Installation & basic setup
-- **[Architecture](./docs/02-ARCHITECTURE.md)** — How it works under the hood
-- **[Tenant Context Pattern](./docs/03-TENANT_CONTEXT.md)** — Automatic context injection
-- **[Multiple Patterns](./docs/04-MULTIPLE_PATTERNS.md)** — Support ID, slug, header, subdomain
-- **[Configuration](./docs/05-CONFIGURATION.md)** — Dev, staging, production setup
-- **[Performance Tuning](./docs/06-PERFORMANCE.md)** — Caching strategies & metrics
-- **[API Reference](./docs/07-API_REFERENCE.md)** — Complete API documentation
 
 ## 🔧 Advanced Usage
 
@@ -195,40 +178,6 @@ With cache:      1 DB call  × 50ms = 50ms (+ 1-2ms for L1 cache)
 Improvement:     5x faster, 4 DB calls eliminated per request
 ```
 
-## 🏗️ Project Structure
-
-```
-MultiTierCache/
-├── src/
-│   └── MultiTierCache/
-│       ├── Core/
-│       │   ├── CacheConfiguration.cs
-│       │   ├── Resolvers.cs
-│       │   ├── Providers.cs
-│       │   ├── L1Cache.cs
-│       │   ├── L2Cache.cs
-│       │   └── Middleware.cs
-│       └── MultiTierCache.csproj
-├── tests/
-│   └── MultiTierCache.Tests/
-│       ├── CacheTests.cs
-│       ├── ResolverTests.cs
-│       ├── MiddlewareTests.cs
-│       └── MultiTierCache.Tests.csproj
-├── examples/
-│   └── MultiTierCache.Examples/
-│       ├── Program.cs
-│       ├── Models/
-│       ├── Database/
-│       └── MultiTierCache.Examples.csproj
-├── docs/
-│   ├── 01-GETTING_STARTED.md
-│   ├── 02-ARCHITECTURE.md
-│   └── ...
-├── MultiTierCache.sln
-└── README.md
-```
-
 ## 🧪 Testing
 
 ### Run All Tests
@@ -244,37 +193,6 @@ dotnet test
 dotnet test /p:CollectCoverage=true /p:CoverageFormat=opencover
 ```
 
-### Test Examples
-
-```csharp
-[Fact]
-public async Task GetAsync_ReturnsL1Value_WhenAvailable()
-{
-    var cache = new InMemoryL1Cache();
-    await cache.SetAsync("key1", "value", TimeSpan.FromMinutes(5));
-    
-    var result = await cache.GetAsync<string>("key1");
-    
-    Assert.Equal("value", result);
-}
-
-[Fact]
-public async Task MultiTierCache_FallsbackToL2_OnL1Miss()
-{
-    var l1Mock = new Mock<IL1Cache>();
-    var l2Mock = new Mock<IL2Cache>();
-    
-    l1Mock.Setup(c => c.GetAsync<string>(It.IsAny<string>()))
-        .ReturnsAsync((string)null);
-    l2Mock.Setup(c => c.GetAsync<string>(It.IsAny<string>()))
-        .ReturnsAsync("l2-value");
-    
-    var cache = new MultiTierCache(l1Mock.Object, l2Mock.Object, config);
-    var result = await cache.GetAsync<string>("tenant1", "key1");
-    
-    Assert.Equal("l2-value", result);
-}
-```
 
 ## 🐳 Docker / Kubernetes
 
@@ -395,16 +313,6 @@ Install-Package MultiTierCache
 - **Global applications** — Region-specific tenant resolution
 - **Legacy modernization** — Add caching without architecture changes
 
-## 📊 Benchmarks
-
-Run benchmarks locally:
-
-```bash
-cd benchmarks
-dotnet run -c Release
-```
-
-See [BENCHMARKS.md](./docs/BENCHMARKS.md) for detailed results.
 
 ## ✅ Checklist Before Production
 
@@ -419,14 +327,12 @@ See [BENCHMARKS.md](./docs/BENCHMARKS.md) for detailed results.
 
 ## 🙏 Acknowledgments
 
-Built with ❤️ by [Your Name/Organization]
+Built with ❤️ by Eligo eVoting inside the Lumi Lab Day Initiative
 
 ## 📞 Contact
 
-- **GitHub:** [@yourusername](https://github.com/yourusername)
-- **Twitter:** [@yourhandle](https://twitter.com/yourhandle)
-- **LinkedIn:** [Your Profile](https://linkedin.com/in/yourprofile)
+- **GitHub:** [@save_veltri](https://github.com/yourusername)
+- **Twitter:** [@save_veltri](https://twitter.com/yourhandle)
+- **LinkedIn:** [saveveltri](https://linkedin.com/in/yourprofile)
 
 ---
-
-**Made with ❤️ for the .NET community**

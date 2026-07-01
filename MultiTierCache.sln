@@ -6,7 +6,7 @@ Project("{9A19103F-16F9-4668-BE54-9A1E7A4F7556}") = "MultiTierCache", "src\Multi
 EndProject
 Project("{9A19103F-16F9-4668-BE54-9A1E7A4F7556}") = "MultiTierCache.Tests", "tests\MultiTierCache.Tests\MultiTierCache.Tests.csproj", "{B2C3D4E5-F6A7-48B9-C0D1-E2F3A4B5C6D7}"
 EndProject
-Project("{9A19103F-16F9-4668-BE54-9A1E7A4F7556}") = "MultiTierCache.Examples", "examples\MultiTierCache.Examples\MultiTierCache.Examples.csproj", "{C3D4E5F6-A7B8-49CA-D1E2-F3A4B5C6D7E8}"
+Project("{9A19103F-16F9-4668-BE54-9A1E7A4F7556}") = "MultiTierCache.Examples", "example-app\MultiTierCache.Examples\MultiTierCache.Examples.csproj", "{C3D4E5F6-A7B8-49CA-D1E2-F3A4B5C6D7E8}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
