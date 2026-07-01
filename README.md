@@ -3,8 +3,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![NuGet](https://img.shields.io/nuget/v/MultiTierCache.svg?color=blue)](https://www.nuget.org/packages/MultiTierCache)
 [![NuGet Downloads](https://img.shields.io/nuget/dt/MultiTierCache.svg?color=blue)](https://www.nuget.org/packages/MultiTierCache)
-[![Build](https://github.com/eligo-social/eligo-cache/workflows/build/badge.svg)](https://github.com/yourusername/MultiTierCache/actions)
-[![Tests](https://github.com/eligo-social/eligo-cache/workflows/tests/badge.svg)](https://github.com/yourusername/MultiTierCache/actions)
+[![Build](https://github.com/eligo-social/eligo-cache/workflows/build/badge.svg)](https://github.com/eligo-social/eligo-cache/MultiTierCache/actions)
+[![Tests](https://github.com/eligo-social/eligo-cache/workflows/tests/badge.svg)](https://github.com/eligo-social/eligo-cache/actions)
 [![.NET 8.0+](https://img.shields.io/badge/.NET-8.0+-512bd4.svg)](https://dotnet.microsoft.com/download/dotnet/8.0)
 
 A production-ready **multi-tiered caching library** for ASP.NET Core with automatic tenant context injection, supporting multiple URL patterns and distributed cache backends.
@@ -190,64 +190,8 @@ dotnet test
 
 ```bash
 # With coverage report
-dotnet test /p:CollectCoverage=true /p:CoverageFormat=opencover
+dotnet test  --collect:"XPlat Code Coverage"
 ```
-
-
-## 🐳 Docker / Kubernetes
-
-### Docker Compose
-
-```yaml
-version: '3.8'
-services:
-  api:
-    build: .
-    environment:
-      Redis__ConnectionString: redis:6379
-      Cache__L1Ttl: "00:05:00"
-      Cache__L2Ttl: "01:00:00"
-    ports:
-      - "5000:5000"
-    depends_on:
-      - redis
-  
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-```
-
-### Kubernetes
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: api-service
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: api
-  template:
-    metadata:
-      labels:
-        app: api
-    spec:
-      containers:
-      - name: api
-        image: api:latest
-        env:
-        - name: Redis__ConnectionString
-          value: redis-service:6379
-        - name: Cache__L1Ttl
-          value: "00:05:00"
-```
-
-See [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) for details.
 
 ## 📈 Roadmap
 
