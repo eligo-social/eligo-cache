@@ -1,0 +1,61 @@
+name: CodeCoverage
+run-name: Code Coderave
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: "main_${{ github.ref }}-codecov"
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  dotnet-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up .NET Core
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: "6.0"
+
+      - name: Build Project
+        run: dotnet build --configuration Release
+
+      - name: Execute tests
+        run: dotnet test --no-build -c Release --verbosity minimal --collect:"XPlat Code Coverage"
+
+      - name: Publish Code Coverage Results
+        uses: codecov/codecov-action@v2
+        with:
+          file: UnitTests/*/TestResults/*/coverage.cobertura.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Combine Coverage Reports
+        uses: danielpalme/ReportGenerator-GitHub-Action@5.2.4
+        with:
+          reports: "**/*.cobertura.xml"
+          targetdir: "${{ github.workspace }}/coverageReport"
+          reporttypes: "Html;MarkdownSummaryGithub"
+          verbosity: "Info"
+          title: "Code Coverage"
+          tag: "${{ github.run_number }}_${{ github.run_id }}"
+          customSettings: ""
+          toolpath: "reportgeneratortool"
+
+      - name: Write to Job Summary
+        run: cat ${{ github.workspace }}//coverageReport/SummaryGithub.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CoverageReport # Artifact name        
+          path: ${{ github.workspace }}/coverageReport # Directory containing files to upload
+
+      
+
+      
