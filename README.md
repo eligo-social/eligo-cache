@@ -212,8 +212,8 @@ Contributions are welcome! See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelin
 ### Setup Development Environment
 
 ```bash
-git clone https://github.com/yourusername/MultiTierCache.git
-cd MultiTierCache
+git clone https://github.com/eligo-social/eligo-cache.git
+cd eligo-cache
 dotnet restore
 dotnet build
 dotnet test
@@ -221,7 +221,7 @@ dotnet test
 
 ### Areas We Need Help With
 
-- Additional cache backends (Memcached, RavenDB)
+- Additional cache backends (Memcached, RavenDB, Custom)
 - Performance optimizations
 - Documentation improvements
 - Example applications
@@ -234,8 +234,8 @@ This project is licensed under the MIT License - see [LICENSE](./LICENSE) file f
 ## 🙋 Support
 
 - **Documentation:** [/docs](./docs)
-- **Issues:** [GitHub Issues](https://github.com/yourusername/MultiTierCache/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/yourusername/MultiTierCache/discussions)
+- **Issues:** [GitHub Issues](https://github.com/eligo-social/eligo-cache/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/eligo-social/eligo-cache/discussions)
 - **Email:** support@example.com
 
 ## 📦 NuGet
