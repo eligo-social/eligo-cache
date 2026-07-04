@@ -23,7 +23,8 @@ namespace MultiTierCache
     public enum L2Implementation
     {
         Redis,
-        Hazelcast
+        Hazelcast,
+        Custom
     }
 
     /// <summary>
@@ -434,6 +435,7 @@ namespace MultiTierCache
         private readonly IServiceCollection _services;
         private CacheConfiguration _config = new();
         private Func<string, Task<object>> _tenantDataFetch;
+        private Func<IServiceProvider, ICacheLayer> _customL2Factory;
 
         public MultiTierCacheBuilder(IServiceCollection services)
         {
@@ -474,23 +476,66 @@ namespace MultiTierCache
             return this;
         }
 
+        /// <summary>
+        /// Use a custom L2 cache implementation.
+        /// The instance must implement <see cref="ICacheLayer"/>.
+        /// </summary>
+        public MultiTierCacheBuilder WithCustomL2(ICacheLayer implementation)
+        {
+            if (implementation == null)
+                throw new ArgumentNullException(nameof(implementation));
+
+            return WithCustomL2(_ => implementation);
+        }
+
+        /// <summary>
+        /// Use a custom L2 cache implementation resolved from a factory.
+        /// The produced instance must implement <see cref="ICacheLayer"/>.
+        /// The factory receives the application <see cref="IServiceProvider"/> so the
+        /// implementation can pull its own dependencies from DI.
+        /// </summary>
+        public MultiTierCacheBuilder WithCustomL2(Func<IServiceProvider, ICacheLayer> factory)
+        {
+            _customL2Factory = factory ?? throw new ArgumentNullException(nameof(factory));
+            _config.L2Implementation = L2Implementation.Custom;
+            RegisterCaches();
+            return this;
+        }
+
+        /// <summary>
+        /// Use a custom L2 cache implementation resolved from DI by its type.
+        /// <typeparamref name="TCacheLayer"/> must implement <see cref="ICacheLayer"/>.
+        /// </summary>
+        public MultiTierCacheBuilder WithCustomL2<TCacheLayer>()
+            where TCacheLayer : class, ICacheLayer
+        {
+            _services.AddSingleton<TCacheLayer>();
+            return WithCustomL2(sp => sp.GetRequiredService<TCacheLayer>());
+        }
+
+        private ICacheLayer CreateL2(IServiceProvider sp)
+        {
+            return _config.L2Implementation switch
+            {
+                L2Implementation.Redis => new RedisL2Cache(_config.RedisConnectionString),
+                L2Implementation.Hazelcast => new HazelcastL2Cache(_config.HazelcastConnectionString),
+                L2Implementation.Custom => (_customL2Factory
+                    ?? throw new InvalidOperationException(
+                        "L2Implementation is Custom but no custom L2 factory was configured."))(sp),
+                _ => throw new InvalidOperationException(
+                    $"Unsupported L2 implementation: {_config.L2Implementation}.")
+            };
+        }
+
         private void RegisterCaches()
         {
             _services.AddSingleton(_config);
-            _services.AddSingleton<ICacheLayer, InMemoryL1Cache>();
 
-            if (_config.L2Implementation == L2Implementation.Redis)
-            {
-                _services.AddSingleton<ICacheLayer>(sp => 
-                    new RedisL2Cache(_config.RedisConnectionString));
-            }
-            else
-            {
-                _services.AddSingleton<ICacheLayer>(sp => 
-                    new HazelcastL2Cache(_config.HazelcastConnectionString));
-            }
-
-            _services.AddSingleton<IMultiTierCache, MultiTierCache>();
+            // Build L1 and L2 explicitly so each layer resolves to the correct
+            // ICacheLayer instance (a bare ICacheLayer registration would inject
+            // the same layer for both constructor parameters).
+            _services.AddSingleton<IMultiTierCache>(sp =>
+                new MultiTierCache(new InMemoryL1Cache(), CreateL2(sp), _config));
 
             // Register tenant context accessor
             _services.AddScoped<ITenantContextAccessor, HttpContextTenantAccessor>();

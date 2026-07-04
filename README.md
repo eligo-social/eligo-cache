@@ -11,7 +11,7 @@ A production-ready **multi-tiered caching library** for ASP.NET Core with automa
 
 - **Two-Tier Caching**
   - L1: Fast in-memory cache (5 sec - 30 min TTL)
-  - L2: Distributed cache via Redis or Hazelcast (1 hour - 1 day TTL)
+  - L2: Distributed cache via Redis, Hazelcast, or a custom `ICacheLayer` (1 hour - 1 day TTL)
   - Automatic L1→L2 fallback on miss
 
 - **Tenant Resolution**
@@ -134,6 +134,44 @@ app.UseMultiTierCacheWithResolver(
 );
 ```
 
+### Custom L2 Cache Backend
+
+Besides the built-in Redis and Hazelcast backends, you can plug in your own L2
+distributed cache. The only requirement is that it implements `ICacheLayer`:
+
+```csharp
+public class MyCustomL2Cache : ICacheLayer
+{
+    public Task<T> GetAsync<T>(string key) { /* ... */ }
+    public Task SetAsync<T>(string key, T value, TimeSpan ttl) { /* ... */ }
+    public Task RemoveAsync(string key) { /* ... */ }
+    public Task<bool> ExistsAsync(string key) { /* ... */ }
+}
+```
+
+Register it with one of the `WithCustomL2` overloads:
+
+```csharp
+builder.Services.AddMultiTierCache(cache =>
+{
+    cache
+        .WithL1TimeToLive(TimeSpan.FromMinutes(5))
+        .WithL2TimeToLive(TimeSpan.FromHours(1))
+
+        // 1. Resolve from DI by type (the type is registered for you)
+        .WithCustomL2<MyCustomL2Cache>();
+
+        // 2. Or pass a ready-made instance
+        // .WithCustomL2(new MyCustomL2Cache("connection-string"));
+
+        // 3. Or use a factory with access to the service provider
+        // .WithCustomL2(sp => new MyCustomL2Cache(sp.GetRequiredService<IFoo>()));
+});
+```
+
+L1 always stays in-memory (`InMemoryL1Cache`); only the L2 layer is replaced, and
+the automatic L1→L2 fallback and per-tenant invalidation continue to work unchanged.
+
 ### Cache Invalidation
 
 ```csharp
@@ -199,6 +237,7 @@ dotnet test  --collect:"XPlat Code Coverage"
 - [x] Tenant Context Resolution from Authentication Token 
 - [x] Redis backend
 - [x] Hazelcast backend
+- [x] Custom L2 backend (any `ICacheLayer`)
 - [ ] OpenTelemetry metrics
 - [ ] Cache preloading strategies
 - [ ] GraphQL support
