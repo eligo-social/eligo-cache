@@ -1,6 +1,112 @@
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace MultiTierCache;
+
+    /// <summary>
+    /// Converts ASP.NET-style route templates such as "/api/tenants/{tenantId:int}"
+    /// into a regular expression with a named "tenant" capture group, suitable for
+    /// <see cref="RegexTenantResolver"/>.
+    ///
+    /// Supported inline constraints: int, long, guid, bool, alpha, decimal/double/float,
+    /// and numeric range constraints (min/max/range). Catch-all parameters ({*rest})
+    /// map to ".+". Unknown or unsupported constraints (including regex(...)) fall back
+    /// to the default segment pattern "[^/]+".
+    /// </summary>
+    public static class RouteTemplateConverter
+    {
+        /// <summary>Name of the capture group produced for the tenant parameter.</summary>
+        public const string TenantGroupName = "tenant";
+
+        private static readonly Regex PlaceholderRegex =
+            new(@"\{(?<name>[^{}:]+)(?::(?<constraint>[^{}]+))?\}", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Translate a route template into a regex pattern. The tenant parameter is
+        /// captured in a group named "tenant". When <paramref name="tenantParameterName"/>
+        /// is supplied, the matching placeholder is captured; otherwise the first
+        /// placeholder is used.
+        /// </summary>
+        public static string ToRegexPattern(string template, string tenantParameterName = null)
+        {
+            if (string.IsNullOrWhiteSpace(template))
+                throw new ArgumentException("Route template must not be null or empty.", nameof(template));
+
+            var placeholders = PlaceholderRegex.Matches(template);
+            if (placeholders.Count == 0)
+                throw new ArgumentException(
+                    $"Route template '{template}' does not contain any '{{parameter}}' placeholders.",
+                    nameof(template));
+
+            var tenantIndex = ResolveTenantIndex(placeholders, tenantParameterName);
+
+            var sb = new StringBuilder();
+            var cursor = 0;
+            for (var i = 0; i < placeholders.Count; i++)
+            {
+                var placeholder = placeholders[i];
+
+                // Escape the literal text preceding this placeholder.
+                sb.Append(Regex.Escape(template.Substring(cursor, placeholder.Index - cursor)));
+
+                var name = placeholder.Groups["name"].Value;
+                var isCatchAll = name.StartsWith("*");
+                var constraint = placeholder.Groups["constraint"].Success
+                    ? placeholder.Groups["constraint"].Value
+                    : null;
+                var body = PatternFor(constraint, isCatchAll);
+
+                sb.Append(i == tenantIndex ? $"(?<{TenantGroupName}>{body})" : $"(?:{body})");
+
+                cursor = placeholder.Index + placeholder.Length;
+            }
+
+            // Escape any trailing literal text.
+            sb.Append(Regex.Escape(template.Substring(cursor)));
+            return sb.ToString();
+        }
+
+        private static int ResolveTenantIndex(MatchCollection placeholders, string tenantParameterName)
+        {
+            if (string.IsNullOrEmpty(tenantParameterName))
+                return 0;
+
+            for (var i = 0; i < placeholders.Count; i++)
+            {
+                var rawName = placeholders[i].Groups["name"].Value.TrimStart('*');
+                if (string.Equals(rawName, tenantParameterName, StringComparison.OrdinalIgnoreCase))
+                    return i;
+            }
+
+            throw new ArgumentException(
+                $"Route template does not contain a parameter named '{tenantParameterName}'.",
+                nameof(tenantParameterName));
+        }
+
+        private static string PatternFor(string constraint, bool isCatchAll)
+        {
+            if (isCatchAll)
+                return ".+";
+
+            // Constraints can be chained, e.g. "int:min(1)" - the first token drives the shape.
+            var token = constraint?.Split(':')[0].Trim().ToLowerInvariant();
+
+            // Strip any parenthesised arguments, e.g. "length(5)" -> "length".
+            var paren = token?.IndexOf('(') ?? -1;
+            if (paren >= 0)
+                token = token.Substring(0, paren);
+
+            return token switch
+            {
+                "int" or "long" or "min" or "max" or "range" => @"\d+",
+                "guid" => @"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+                "bool" => @"(?:true|false)",
+                "alpha" => @"[a-zA-Z]+",
+                "decimal" or "double" or "float" => @"[-+]?[0-9]*\.?[0-9]+",
+                _ => @"[^/]+"
+            };
+        }
+    }
 
 /// <summary>
     /// Tenant extraction from HTTP context

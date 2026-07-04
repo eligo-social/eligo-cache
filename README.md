@@ -90,6 +90,50 @@ app.MapGet("/api/tenants/{tenantId}/users", (ITenantContextService context) =>
 
 ## 🔧 Advanced Usage
 
+### Route Template Syntax
+
+The default `UseMultiTierCache(...)` takes a **regular expression** with a named
+`tenant` capture group:
+
+```csharp
+app.UseMultiTierCache(@"/api/tenants/(?<tenant>[^/]+)");
+```
+
+If you prefer ASP.NET-style route templates, use `UseMultiTierCacheWithTemplate(...)`.
+It translates the template into the equivalent regex for you, so
+`{tenantId:int}` only matches numeric tenants:
+
+```csharp
+app.UseMultiTierCacheWithTemplate("/api/tenants/{tenantId:int}");
+// equivalent to: @"/api/tenants/(?<tenant>\d+)"
+```
+
+Supported inline constraints:
+
+| Template                         | Matches                     | Equivalent regex |
+|----------------------------------|-----------------------------|------------------|
+| `{tenantId}`                     | any single path segment     | `[^/]+`          |
+| `{tenantId:int}` / `{id:long}`   | digits only                 | `\d+`            |
+| `{id:guid}`                      | a GUID                      | GUID pattern     |
+| `{id:alpha}`                     | letters only                | `[a-zA-Z]+`      |
+| `{id:bool}`                      | `true` / `false`            | `(?:true\|false)`|
+| `{id:decimal}` / `:double`/`:float` | a decimal number         | `[-+]?[0-9]*\.?[0-9]+` |
+| `{*rest}`                        | catch-all (rest of path)    | `.+`             |
+
+Notes:
+
+- The **first** placeholder is captured as the tenant by default. With multiple
+  placeholders, name the tenant parameter explicitly:
+  ```csharp
+  app.UseMultiTierCacheWithTemplate(
+      "/api/{version}/tenants/{tenantId:int}",
+      tenantParameterName: "tenantId");
+  ```
+- Chained constraints such as `{id:int:min(1)}` use the first token (`int`) for matching.
+- Unknown/unsupported constraints (including `regex(...)`) fall back to `[^/]+`.
+- An optional tenant data fetch callback can be passed as the second argument, exactly
+  like `UseMultiTierCache`.
+
 ### Multiple Tenant Resolution Patterns
 
 Support both `/tenants/123` (numeric) and `/Tenants/acme` (slug):

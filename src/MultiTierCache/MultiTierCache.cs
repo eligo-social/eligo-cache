@@ -361,6 +361,28 @@ namespace MultiTierCache
         }
 
         /// <summary>
+        /// Use middleware with an ASP.NET-style route template instead of a raw regex.
+        /// For example "/api/tenants/{tenantId:int}" matches numeric tenant ids only.
+        /// The template is translated to a regex with a named "tenant" capture group.
+        /// </summary>
+        /// <param name="app">The application builder.</param>
+        /// <param name="routeTemplate">Route template, e.g. "/api/tenants/{tenantId:int}".</param>
+        /// <param name="tenantDataFetch">Optional tenant data fetch callback.</param>
+        /// <param name="tenantParameterName">
+        /// Name of the template parameter that holds the tenant. Defaults to the first
+        /// placeholder when omitted.
+        /// </param>
+        public static IApplicationBuilder UseMultiTierCacheWithTemplate(
+            this IApplicationBuilder app,
+            string routeTemplate,
+            Func<string, Task<object>> tenantDataFetch = null,
+            string tenantParameterName = null)
+        {
+            var pattern = RouteTemplateConverter.ToRegexPattern(routeTemplate, tenantParameterName);
+            return app.UseMultiTierCache(pattern, tenantDataFetch);
+        }
+
+        /// <summary>
         /// Use middleware with multiple patterns via MultiPatternRouteResolver
         /// Supports: /tenants/{tenantId}/**, /Tenants/{tenantSlug}/**, headers, subdomains, etc.
         /// </summary>
