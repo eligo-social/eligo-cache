@@ -28,6 +28,16 @@ var app = builder.Build();
 // Example: /api/tenants/acme/users -> tenantId = "acme"
 app.UseMultiTierCache(@"/api/tenants/(?<tenant>[^/]+)");
 
+// Alternative: resolve the tenant from several sources with fallback.
+// The first matching source wins (path -> header -> subdomain).
+// app.UseMultiTierCacheWithPatterns(patterns =>
+// {
+//     patterns
+//         .WithRegexPattern(@"/api/tenants/(?<tenant>[^/]+)") // /api/tenants/acme/...
+//         .WithHeader("X-Tenant-Id")                          // fallback to header
+//         .WithSubdomain();                                   // fallback to acme.example.com
+// });
+
 app.UseRouting();
 app.UseEndpoints(endpoints =>
 {

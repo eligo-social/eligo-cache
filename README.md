@@ -160,6 +160,31 @@ app.UseMultiTierCacheWithPatterns(
 );
 ```
 
+`MultiPatternRouteResolver` tries each registered source **in order** and returns the
+first non-empty tenant id (empty results are treated as "no match" and fall through).
+Available sources:
+
+| Builder method | Resolves from | Notes |
+|----------------|---------------|-------|
+| `WithRegexPattern(pattern)` | request path via regex | pattern needs a named `tenant` group |
+| `WithNumericTenantId(name)` | route value `{name}` | reads matched route data |
+| `WithTenantSlug(name)` | route value `{name}` | reads matched route data |
+| `WithHeader(headerName)` | request header | defaults to `X-Tenant-Id` |
+| `WithSubdomain()` | host subdomain | ignores `www`, `api`, `admin` |
+| `WithCustomResolver(resolver)` | your `ITenantResolver` | any custom logic |
+
+Example — path first, then header, then subdomain:
+
+```csharp
+app.UseMultiTierCacheWithPatterns(patterns =>
+{
+    patterns
+        .WithRegexPattern(@"/api/tenants/(?<tenant>[^/]+)") // /api/tenants/acme/...
+        .WithHeader("X-Tenant-Id")                          // fallback to header
+        .WithSubdomain();                                   // fallback to acme.example.com
+});
+```
+
 ### Custom Tenant Resolver
 
 ```csharp
