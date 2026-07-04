@@ -1,7 +1,13 @@
-name: CodeCoverage
-run-name: Code Coderave
+name: Build And Test Main
+run-name: Build And Test Main
 
 on:
+  push:
+    branches:
+      - "main"
+    paths-ignore:
+      - ".github/**"
+  
   workflow_dispatch:
 
 concurrency:
