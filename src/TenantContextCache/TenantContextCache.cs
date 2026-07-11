@@ -1,12 +1,16 @@
-using System.Collections.Concurrent;
-using System.Text.Json;
-using System.Text.RegularExpressions;
-using StackExchange.Redis;
+using Microsoft.Extensions.Caching.Distributed;
+using ZiggyCreatures.Caching.Fusion;
 
-namespace MultiTierCache
+namespace TenantContextCache
 {
     /// <summary>
-    /// Represents cache configuration settings
+    /// Represents cache configuration settings.
+    /// <para>
+    /// The two TTLs map onto FusionCache durations: <see cref="L1TimeToLive"/> becomes the
+    /// in-memory (L1) <c>Duration</c> and <see cref="L2TimeToLive"/> becomes the distributed
+    /// (L2) <c>DistributedCacheDuration</c>. A shorter L1 duration means the local copy is
+    /// refreshed from L2 more often, exactly as with the previous hand-rolled two-tier cache.
+    /// </para>
     /// </summary>
     public class CacheConfiguration
     {
@@ -14,16 +18,16 @@ namespace MultiTierCache
         public TimeSpan L2TimeToLive { get; set; } = TimeSpan.FromHours(1);
         public L2Implementation L2Implementation { get; set; } = L2Implementation.Redis;
         public string RedisConnectionString { get; set; }
-        public string HazelcastConnectionString { get; set; }
     }
 
     /// <summary>
-    /// Supported L2 cache implementations
+    /// Supported L2 (distributed) cache implementations. FusionCache models the L2 layer as
+    /// an <see cref="IDistributedCache"/>, so any backend with an <c>IDistributedCache</c>
+    /// adapter can be plugged in via <see cref="L2Implementation.Custom"/>.
     /// </summary>
     public enum L2Implementation
     {
         Redis,
-        Hazelcast,
         Custom
     }
 
@@ -45,7 +49,7 @@ namespace MultiTierCache
     /// <summary>
     /// Multi-tiered cache orchestrator
     /// </summary>
-    public interface IMultiTierCache
+    public interface ITenantContextCache
     {
         Task<T> GetAsync<T>(string tenantId, string key);
         Task SetAsync<T>(string tenantId, string key, T value);
@@ -54,46 +58,34 @@ namespace MultiTierCache
     }
 
     /// <summary>
-    /// Multi-tiered cache implementation with L1 and L2
+    /// Multi-tiered, tenant-aware cache implementation backed by FusionCache.
+    /// <para>
+    /// FusionCache provides the hybrid L1 (in-memory) + L2 (distributed) behaviour natively:
+    /// reads are served from L1 and transparently back-filled from L2, writes fan out to both
+    /// layers, and a Redis backplane keeps L1 coherent across nodes. Every entry is tagged with
+    /// its tenant so an entire tenant can be evicted in one call via <see cref="RemoveAllTenantAsync"/>.
+    /// </para>
     /// </summary>
-    public class MultiTierCache : IMultiTierCache
+    public class TenantContextCache : ITenantContextCache
     {
-        private readonly ICacheLayer _l1Cache;
-        private readonly ICacheLayer _l2Cache;
-        private readonly CacheConfiguration _config;
-        private readonly ConcurrentDictionary<string, HashSet<string>> _tenantKeyTracking = new();
+        private readonly IFusionCache _cache;
 
-        public MultiTierCache(ICacheLayer l1Cache, ICacheLayer l2Cache, CacheConfiguration config)
+        public TenantContextCache(IFusionCache cache)
         {
-            _l1Cache = l1Cache;
-            _l2Cache = l2Cache;
-            _config = config;
+            _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         }
 
-        private string BuildKey(string tenantId, string key) => $"tenant:{tenantId}:{key}";
+        private static string BuildKey(string tenantId, string key) => $"tenant:{tenantId}:{key}";
+
+        // Tag applied to every entry belonging to a tenant, enabling one-shot bulk eviction.
+        private static string TenantTag(string tenantId) => $"tenant:{tenantId}";
 
         public async Task<T> GetAsync<T>(string tenantId, string key)
         {
             if (string.IsNullOrEmpty(tenantId) || string.IsNullOrEmpty(key))
                 return default;
 
-            var fullKey = BuildKey(tenantId, key);
-
-            // Try L1 first
-            var l1Value = await _l1Cache.GetAsync<T>(fullKey);
-            if (l1Value != null)
-                return l1Value;
-
-            // Fall back to L2
-            var l2Value = await _l2Cache.GetAsync<T>(fullKey);
-            if (l2Value != null)
-            {
-                // Populate L1 from L2
-                await _l1Cache.SetAsync(fullKey, l2Value, _config.L1TimeToLive);
-                return l2Value;
-            }
-
-            return default;
+            return await _cache.GetOrDefaultAsync<T>(BuildKey(tenantId, key));
         }
 
         public async Task SetAsync<T>(string tenantId, string key, T value)
@@ -101,44 +93,23 @@ namespace MultiTierCache
             if (string.IsNullOrEmpty(tenantId) || string.IsNullOrEmpty(key))
                 return;
 
-            var fullKey = BuildKey(tenantId, key);
-
-            // Set in both layers
-            await _l1Cache.SetAsync(fullKey, value, _config.L1TimeToLive);
-            await _l2Cache.SetAsync(fullKey, value, _config.L2TimeToLive);
-
-            // Track keys per tenant for bulk removal
-            _tenantKeyTracking.AddOrUpdate(
-                tenantId,
-                new HashSet<string> { fullKey },
-                (_, keys) => { keys.Add(fullKey); return keys; }
-            );
+            await _cache.SetAsync(BuildKey(tenantId, key), value, tags: new[] { TenantTag(tenantId) });
         }
 
         public async Task RemoveAsync(string tenantId, string key)
         {
-            var fullKey = BuildKey(tenantId, key);
-            await _l1Cache.RemoveAsync(fullKey);
-            await _l2Cache.RemoveAsync(fullKey);
+            if (string.IsNullOrEmpty(tenantId) || string.IsNullOrEmpty(key))
+                return;
 
-            if (_tenantKeyTracking.TryGetValue(tenantId, out var keys))
-            {
-                keys.Remove(fullKey);
-            }
+            await _cache.RemoveAsync(BuildKey(tenantId, key));
         }
 
         public async Task RemoveAllTenantAsync(string tenantId)
         {
-            if (_tenantKeyTracking.TryRemove(tenantId, out var keys))
-            {
-                var tasks = new List<Task>();
-                foreach (var key in keys)
-                {
-                    tasks.Add(_l1Cache.RemoveAsync(key));
-                    tasks.Add(_l2Cache.RemoveAsync(key));
-                }
-                await Task.WhenAll(tasks);
-            }
+            if (string.IsNullOrEmpty(tenantId))
+                return;
+
+            await _cache.RemoveByTagAsync(TenantTag(tenantId));
         }
     }
 
@@ -158,12 +129,12 @@ namespace MultiTierCache
     /// </summary>
     public class TenantCache : ITenantCache
     {
-        private readonly IMultiTierCache _cache;
+        private readonly ITenantContextCache _cache;
         private readonly string _tenantId;
 
         public string TenantId => _tenantId;
 
-        public TenantCache(IMultiTierCache cache, string tenantId)
+        public TenantCache(ITenantContextCache cache, string tenantId)
         {
             _cache = cache ?? throw new ArgumentNullException(nameof(cache));
             _tenantId = tenantId ?? throw new ArgumentNullException(nameof(tenantId));
@@ -328,13 +299,13 @@ namespace MultiTierCache
     /// <summary>
     /// Service collection extensions for DI registration
     /// </summary>
-    public static class MultiTierCacheExtensions
+    public static class TenantContextCacheExtensions
     {
-        public static IServiceCollection AddMultiTierCache(
+        public static IServiceCollection AddTenantContextCache(
             this IServiceCollection services,
-            Action<MultiTierCacheBuilder> configure)
+            Action<TenantContextCacheBuilder> configure)
         {
-            var builder = new MultiTierCacheBuilder(services);
+            var builder = new TenantContextCacheBuilder(services);
             configure(builder);
             return services;
         }
@@ -342,7 +313,7 @@ namespace MultiTierCache
         /// <summary>
         /// Use middleware with single regex pattern (backward compatible)
         /// </summary>
-        public static IApplicationBuilder UseMultiTierCache(
+        public static IApplicationBuilder UseTenantContextCache(
             this IApplicationBuilder app,
             string tenantPattern,
             Func<string, Task<object>> tenantDataFetch = null)
@@ -372,21 +343,21 @@ namespace MultiTierCache
         /// Name of the template parameter that holds the tenant. Defaults to the first
         /// placeholder when omitted.
         /// </param>
-        public static IApplicationBuilder UseMultiTierCacheWithTemplate(
+        public static IApplicationBuilder UseTenantContextCacheWithTemplate(
             this IApplicationBuilder app,
             string routeTemplate,
             Func<string, Task<object>> tenantDataFetch = null,
             string tenantParameterName = null)
         {
             var pattern = RouteTemplateConverter.ToRegexPattern(routeTemplate, tenantParameterName);
-            return app.UseMultiTierCache(pattern, tenantDataFetch);
+            return app.UseTenantContextCache(pattern, tenantDataFetch);
         }
 
         /// <summary>
         /// Use middleware with multiple patterns via MultiPatternRouteResolver
         /// Supports: /tenants/{tenantId}/**, /Tenants/{tenantSlug}/**, headers, subdomains, etc.
         /// </summary>
-        public static IApplicationBuilder UseMultiTierCacheWithPatterns(
+        public static IApplicationBuilder UseTenantContextCacheWithPatterns(
             this IApplicationBuilder app,
             Action<MultiPatternRouteResolver> configurePatterns,
             Func<string, Task<object>> tenantDataFetch = null)
@@ -408,7 +379,7 @@ namespace MultiTierCache
         /// <summary>
         /// Use middleware with custom resolver
         /// </summary>
-        public static IApplicationBuilder UseMultiTierCacheWithResolver(
+        public static IApplicationBuilder UseTenantContextCacheWithResolver(
             this IApplicationBuilder app,
             ITenantResolver tenantResolver,
             Func<string, Task<object>> tenantDataFetch = null)
@@ -424,7 +395,7 @@ namespace MultiTierCache
             return app.UseMiddleware<TenantResolutionMiddleware>(tenantResolver, emptyProvider, new List<Func<string, Task<(string, object)>>>());
         }
 
-        public static IApplicationBuilder UseMultiTierCacheWithResolvers(
+        public static IApplicationBuilder UseTenantContextCacheWithResolvers(
             this IApplicationBuilder app,
             string tenantPattern,
             Func<string, Task<object>> tenantDataFetch,
@@ -452,37 +423,37 @@ namespace MultiTierCache
     /// <summary>
     /// Builder for configuring multi-tier cache
     /// </summary>
-    public class MultiTierCacheBuilder
+    public class TenantContextCacheBuilder
     {
         private readonly IServiceCollection _services;
         private CacheConfiguration _config = new();
         private Func<string, Task<object>> _tenantDataFetch;
-        private Func<IServiceProvider, ICacheLayer> _customL2Factory;
+        private Func<IServiceProvider, IDistributedCache> _customL2Factory;
 
-        public MultiTierCacheBuilder(IServiceCollection services)
+        public TenantContextCacheBuilder(IServiceCollection services)
         {
             _services = services;
         }
 
-        public MultiTierCacheBuilder WithL1TimeToLive(TimeSpan ttl)
+        public TenantContextCacheBuilder WithL1TimeToLive(TimeSpan ttl)
         {
             _config.L1TimeToLive = ttl;
             return this;
         }
 
-        public MultiTierCacheBuilder WithL2TimeToLive(TimeSpan ttl)
+        public TenantContextCacheBuilder WithL2TimeToLive(TimeSpan ttl)
         {
             _config.L2TimeToLive = ttl;
             return this;
         }
 
-        public MultiTierCacheBuilder WithTenantDataFetch(Func<string, Task<object>> fetchFunc)
+        public TenantContextCacheBuilder WithTenantDataFetch(Func<string, Task<object>> fetchFunc)
         {
             _tenantDataFetch = fetchFunc;
             return this;
         }
 
-        public MultiTierCacheBuilder WithRedisL2(string connectionString)
+        public TenantContextCacheBuilder WithRedisL2(string connectionString)
         {
             _config.L2Implementation = L2Implementation.Redis;
             _config.RedisConnectionString = connectionString;
@@ -490,19 +461,11 @@ namespace MultiTierCache
             return this;
         }
 
-        public MultiTierCacheBuilder WithHazelcastL2(string connectionString)
-        {
-            _config.L2Implementation = L2Implementation.Hazelcast;
-            _config.HazelcastConnectionString = connectionString;
-            RegisterCaches();
-            return this;
-        }
-
         /// <summary>
-        /// Use a custom L2 cache implementation.
-        /// The instance must implement <see cref="ICacheLayer"/>.
+        /// Use a custom L2 (distributed) cache implementation. The instance must implement
+        /// <see cref="IDistributedCache"/> — FusionCache's abstraction for the distributed layer.
         /// </summary>
-        public MultiTierCacheBuilder WithCustomL2(ICacheLayer implementation)
+        public TenantContextCacheBuilder WithCustomL2(IDistributedCache implementation)
         {
             if (implementation == null)
                 throw new ArgumentNullException(nameof(implementation));
@@ -511,12 +474,12 @@ namespace MultiTierCache
         }
 
         /// <summary>
-        /// Use a custom L2 cache implementation resolved from a factory.
-        /// The produced instance must implement <see cref="ICacheLayer"/>.
+        /// Use a custom L2 (distributed) cache implementation resolved from a factory.
+        /// The produced instance must implement <see cref="IDistributedCache"/>.
         /// The factory receives the application <see cref="IServiceProvider"/> so the
         /// implementation can pull its own dependencies from DI.
         /// </summary>
-        public MultiTierCacheBuilder WithCustomL2(Func<IServiceProvider, ICacheLayer> factory)
+        public TenantContextCacheBuilder WithCustomL2(Func<IServiceProvider, IDistributedCache> factory)
         {
             _customL2Factory = factory ?? throw new ArgumentNullException(nameof(factory));
             _config.L2Implementation = L2Implementation.Custom;
@@ -525,39 +488,58 @@ namespace MultiTierCache
         }
 
         /// <summary>
-        /// Use a custom L2 cache implementation resolved from DI by its type.
-        /// <typeparamref name="TCacheLayer"/> must implement <see cref="ICacheLayer"/>.
+        /// Use a custom L2 (distributed) cache implementation resolved from DI by its type.
+        /// <typeparamref name="TDistributedCache"/> must implement <see cref="IDistributedCache"/>.
         /// </summary>
-        public MultiTierCacheBuilder WithCustomL2<TCacheLayer>()
-            where TCacheLayer : class, ICacheLayer
+        public TenantContextCacheBuilder WithCustomL2<TDistributedCache>()
+            where TDistributedCache : class, IDistributedCache
         {
-            _services.AddSingleton<TCacheLayer>();
-            return WithCustomL2(sp => sp.GetRequiredService<TCacheLayer>());
-        }
-
-        private ICacheLayer CreateL2(IServiceProvider sp)
-        {
-            return _config.L2Implementation switch
-            {
-                L2Implementation.Redis => new RedisL2Cache(_config.RedisConnectionString),
-                L2Implementation.Hazelcast => new HazelcastL2Cache(_config.HazelcastConnectionString),
-                L2Implementation.Custom => (_customL2Factory
-                    ?? throw new InvalidOperationException(
-                        "L2Implementation is Custom but no custom L2 factory was configured."))(sp),
-                _ => throw new InvalidOperationException(
-                    $"Unsupported L2 implementation: {_config.L2Implementation}.")
-            };
+            _services.AddSingleton<TDistributedCache>();
+            return WithCustomL2(sp => sp.GetRequiredService<TDistributedCache>());
         }
 
         private void RegisterCaches()
         {
             _services.AddSingleton(_config);
 
-            // Build L1 and L2 explicitly so each layer resolves to the correct
-            // ICacheLayer instance (a bare ICacheLayer registration would inject
-            // the same layer for both constructor parameters).
-            _services.AddSingleton<IMultiTierCache>(sp =>
-                new MultiTierCache(new InMemoryL1Cache(), CreateL2(sp), _config));
+            // FusionCache provides the hybrid L1 (in-memory) + L2 (distributed) engine.
+            // L1 uses the shorter Duration; L2 keeps entries for the longer
+            // DistributedCacheDuration, matching the previous two-tier TTL semantics.
+            var fusion = _services.AddFusionCache()
+                .WithDefaultEntryOptions(options =>
+                {
+                    options.Duration = _config.L1TimeToLive;
+                    options.DistributedCacheDuration = _config.L2TimeToLive;
+                    // Serve stale data if a refresh/factory fails, instead of throwing.
+                    options.IsFailSafeEnabled = true;
+                })
+                .WithSystemTextJsonSerializer();
+
+            switch (_config.L2Implementation)
+            {
+                case L2Implementation.Redis:
+                    // Redis as both the L2 distributed cache and the cross-node backplane
+                    // (the backplane keeps each node's L1 coherent and propagates tag evictions).
+                    _services.AddStackExchangeRedisCache(o => o.Configuration = _config.RedisConnectionString);
+                    fusion
+                        .WithRegisteredDistributedCache()
+                        .WithStackExchangeRedisBackplane(o => o.Configuration = _config.RedisConnectionString);
+                    break;
+
+                case L2Implementation.Custom:
+                    var factory = _customL2Factory
+                        ?? throw new InvalidOperationException(
+                            "L2Implementation is Custom but no custom L2 factory was configured.");
+                    fusion.WithDistributedCache(factory);
+                    break;
+
+                default:
+                    throw new InvalidOperationException(
+                        $"Unsupported L2 implementation: {_config.L2Implementation}.");
+            }
+
+            _services.AddSingleton<ITenantContextCache>(sp =>
+                new TenantContextCache(sp.GetRequiredService<IFusionCache>()));
 
             // Register tenant context accessor
             _services.AddScoped<ITenantContextAccessor, HttpContextTenantAccessor>();
@@ -582,7 +564,7 @@ namespace MultiTierCache
                 var httpContextAccessor = sp.GetRequiredService<IHttpContextAccessor>();
                 var context = httpContextAccessor.HttpContext;
                 var tenantId = context?.Items["TenantId"] as string ?? "default";
-                var multiTierCache = sp.GetRequiredService<IMultiTierCache>();
+                var multiTierCache = sp.GetRequiredService<ITenantContextCache>();
                 return new TenantCache(multiTierCache, tenantId);
             });
         }

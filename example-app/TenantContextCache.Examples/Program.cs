@@ -1,7 +1,7 @@
 // ===== Program.cs Configuration =====
 
-using MultiTierCache;
-using MultiTierCache.Examples;
+using TenantContextCache;
+using TenantContextCache.Examples;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -9,13 +9,13 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddHttpContextAccessor();
 
 // Configure multi-tier cache with database fetch function
-builder.Services.AddMultiTierCache(cache =>
+builder.Services.AddTenantContextCache(cache =>
 {
     cache
         .WithL1TimeToLive(TimeSpan.FromMinutes(5)) // L1: 5 minutes in-memory
-        .WithL2TimeToLive(TimeSpan.FromHours(1)) // L2: 1 hour in Redis/Hazelcast
-        .WithRedisL2("localhost:6379"); // Use Redis for L2
-    // .WithHazelcastL2("localhost:5701");           // Or use Hazelcast instead
+        .WithL2TimeToLive(TimeSpan.FromHours(1)) // L2: 1 hour in the distributed cache
+        .WithRedisL2("localhost:6379"); // Use Redis for L2 (FusionCache distributed cache + backplane)
+    // .WithCustomL2(myDistributedCache);            // Or bring your own IDistributedCache
 });
 
 // Register tenant database and service
@@ -26,11 +26,11 @@ var app = builder.Build();
 // Use tenant resolution middleware with regex pattern
 // Pattern to extract tenant from URL like /api/tenants/{tenantId}/resources
 // Example: /api/tenants/acme/users -> tenantId = "acme"
-app.UseMultiTierCache(@"/api/tenants/(?<tenant>[^/]+)");
+app.UseTenantContextCache(@"/api/tenants/(?<tenant>[^/]+)");
 
 // Alternative: resolve the tenant from several sources with fallback.
 // The first matching source wins (path -> header -> subdomain).
-// app.UseMultiTierCacheWithPatterns(patterns =>
+// app.UseTenantContextCacheWithPatterns(patterns =>
 // {
 //     patterns
 //         .WithRegexPattern(@"/api/tenants/(?<tenant>[^/]+)") // /api/tenants/acme/...
@@ -67,7 +67,7 @@ app.UseEndpoints(endpoints =>
 
     endpoints.MapPost("/api/tenants/{tenantId}/invalidate-cache", async (
         string tenantId,
-        IMultiTierCache cache) =>
+        ITenantContextCache cache) =>
     {
         // Clear all cache for this tenant
         await cache.RemoveAllTenantAsync(tenantId);

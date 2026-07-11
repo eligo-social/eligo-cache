@@ -27,7 +27,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\MultiTierCache\MultiTierCache.csproj" />
+    <ProjectReference Include="..\..\src\TenantContextCache\TenantContextCache.csproj" />
   </ItemGroup>
 
 </Project>

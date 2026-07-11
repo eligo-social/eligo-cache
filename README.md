@@ -1,18 +1,21 @@
-# MultiTierCache
+# TenantContextCache
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![NuGet](https://img.shields.io/nuget/v/MultiTierCache.svg?color=blue)](https://www.nuget.org/packages/MultiTierCache)
-[![NuGet Downloads](https://img.shields.io/nuget/dt/MultiTierCache.svg?color=blue)](https://www.nuget.org/packages/MultiTierCache)
+[![NuGet](https://img.shields.io/nuget/v/TenantContextCache.svg?color=blue)](https://www.nuget.org/packages/TenantContextCache)
+[![NuGet Downloads](https://img.shields.io/nuget/dt/TenantContextCache.svg?color=blue)](https://www.nuget.org/packages/TenantContextCache)
 [![.NET 8.0+](https://img.shields.io/badge/.NET-8.0+-512bd4.svg)](https://dotnet.microsoft.com/download/dotnet/8.0)
 
 A production-ready **multi-tiered caching library** for ASP.NET Core with automatic tenant context injection, supporting multiple URL patterns and distributed cache backends.
 
+The two-tier caching engine is powered by [**FusionCache**](https://github.com/ZiggyCreatures/FusionCache); this library adds a tenant-aware API, tenant resolution middleware, and per-tenant bulk invalidation on top of it.
+
 ## ✨ Features
 
-- **Two-Tier Caching**
+- **Two-Tier Caching (powered by FusionCache)**
   - L1: Fast in-memory cache (5 sec - 30 min TTL)
-  - L2: Distributed cache via Redis, Hazelcast, or a custom `ICacheLayer` (1 hour - 1 day TTL)
-  - Automatic L1→L2 fallback on miss
+  - L2: Distributed cache via Redis or any custom `IDistributedCache` (1 hour - 1 day TTL)
+  - Automatic L1→L2 fallback on miss, cache stampede protection, and fail-safe
+  - Redis backplane keeps every node's L1 coherent
 
 - **Tenant Resolution**
   - Route parameters (numeric IDs, string slugs)
@@ -31,20 +34,20 @@ A production-ready **multi-tiered caching library** for ASP.NET Core with automa
 ### 1. Install NuGet Package
 
 ```bash
-dotnet add package MultiTierCache
+dotnet add package TenantContextCache
 ```
 
 ### 2. Configure in Program.cs
 
 ```csharp
-using MultiTierCache.Core;
+using TenantContextCache;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddHttpContextAccessor();
 
 // Configure cache
-builder.Services.AddMultiTierCache(cache =>
+builder.Services.AddTenantContextCache(cache =>
 {
     cache
         .WithL1TimeToLive(TimeSpan.FromMinutes(5))
@@ -55,7 +58,7 @@ builder.Services.AddMultiTierCache(cache =>
 var app = builder.Build();
 
 // Add middleware with tenant data fetch
-app.UseMultiTierCache(
+app.UseTenantContextCache(
     @"/api/tenants/(?<tenant>[^/]+)",
     async (tenantId) =>
     {
@@ -92,19 +95,19 @@ app.MapGet("/api/tenants/{tenantId}/users", (ITenantContextService context) =>
 
 ### Route Template Syntax
 
-The default `UseMultiTierCache(...)` takes a **regular expression** with a named
+The default `UseTenantContextCache(...)` takes a **regular expression** with a named
 `tenant` capture group:
 
 ```csharp
-app.UseMultiTierCache(@"/api/tenants/(?<tenant>[^/]+)");
+app.UseTenantContextCache(@"/api/tenants/(?<tenant>[^/]+)");
 ```
 
-If you prefer ASP.NET-style route templates, use `UseMultiTierCacheWithTemplate(...)`.
+If you prefer ASP.NET-style route templates, use `UseTenantContextCacheWithTemplate(...)`.
 It translates the template into the equivalent regex for you, so
 `{tenantId:int}` only matches numeric tenants:
 
 ```csharp
-app.UseMultiTierCacheWithTemplate("/api/tenants/{tenantId:int}");
+app.UseTenantContextCacheWithTemplate("/api/tenants/{tenantId:int}");
 // equivalent to: @"/api/tenants/(?<tenant>\d+)"
 ```
 
@@ -125,21 +128,21 @@ Notes:
 - The **first** placeholder is captured as the tenant by default. With multiple
   placeholders, name the tenant parameter explicitly:
   ```csharp
-  app.UseMultiTierCacheWithTemplate(
+  app.UseTenantContextCacheWithTemplate(
       "/api/{version}/tenants/{tenantId:int}",
       tenantParameterName: "tenantId");
   ```
 - Chained constraints such as `{id:int:min(1)}` use the first token (`int`) for matching.
 - Unknown/unsupported constraints (including `regex(...)`) fall back to `[^/]+`.
 - An optional tenant data fetch callback can be passed as the second argument, exactly
-  like `UseMultiTierCache`.
+  like `UseTenantContextCache`.
 
 ### Multiple Tenant Resolution Patterns
 
 Support both `/tenants/123` (numeric) and `/Tenants/acme` (slug):
 
 ```csharp
-app.UseMultiTierCacheWithPatterns(
+app.UseTenantContextCacheWithPatterns(
     patterns =>
     {
         patterns
@@ -176,7 +179,7 @@ Available sources:
 Example — path first, then header, then subdomain:
 
 ```csharp
-app.UseMultiTierCacheWithPatterns(patterns =>
+app.UseTenantContextCacheWithPatterns(patterns =>
 {
     patterns
         .WithRegexPattern(@"/api/tenants/(?<tenant>[^/]+)") // /api/tenants/acme/...
@@ -197,7 +200,7 @@ public class CustomTenantResolver : ITenantResolver
     }
 }
 
-app.UseMultiTierCacheWithResolver(
+app.UseTenantContextCacheWithResolver(
     new CustomTenantResolver(),
     async (tenantId) => await db.GetTenantAsync(tenantId)
 );
@@ -205,23 +208,29 @@ app.UseMultiTierCacheWithResolver(
 
 ### Custom L2 Cache Backend
 
-Besides the built-in Redis and Hazelcast backends, you can plug in your own L2
-distributed cache. The only requirement is that it implements `ICacheLayer`:
+Besides the built-in Redis backend, you can plug in any L2 distributed cache.
+Because FusionCache uses `IDistributedCache` as its L2 abstraction, the only
+requirement is a standard `IDistributedCache` implementation — many already exist
+(Redis, SQL Server, NCache, etc.) and you can also write your own:
 
 ```csharp
-public class MyCustomL2Cache : ICacheLayer
+public class MyCustomL2Cache : IDistributedCache
 {
-    public Task<T> GetAsync<T>(string key) { /* ... */ }
-    public Task SetAsync<T>(string key, T value, TimeSpan ttl) { /* ... */ }
-    public Task RemoveAsync(string key) { /* ... */ }
-    public Task<bool> ExistsAsync(string key) { /* ... */ }
+    public byte[] Get(string key) { /* ... */ }
+    public Task<byte[]> GetAsync(string key, CancellationToken token = default) { /* ... */ }
+    public void Set(string key, byte[] value, DistributedCacheEntryOptions options) { /* ... */ }
+    public Task SetAsync(string key, byte[] value, DistributedCacheEntryOptions options, CancellationToken token = default) { /* ... */ }
+    public void Refresh(string key) { /* ... */ }
+    public Task RefreshAsync(string key, CancellationToken token = default) { /* ... */ }
+    public void Remove(string key) { /* ... */ }
+    public Task RemoveAsync(string key, CancellationToken token = default) { /* ... */ }
 }
 ```
 
 Register it with one of the `WithCustomL2` overloads:
 
 ```csharp
-builder.Services.AddMultiTierCache(cache =>
+builder.Services.AddTenantContextCache(cache =>
 {
     cache
         .WithL1TimeToLive(TimeSpan.FromMinutes(5))
@@ -238,8 +247,10 @@ builder.Services.AddMultiTierCache(cache =>
 });
 ```
 
-L1 always stays in-memory (`InMemoryL1Cache`); only the L2 layer is replaced, and
-the automatic L1→L2 fallback and per-tenant invalidation continue to work unchanged.
+L1 always stays in-memory (FusionCache's memory layer); only the L2 layer is
+replaced, and the automatic L1→L2 fallback and per-tenant invalidation continue
+to work unchanged. FusionCache handles serialization and key management for the
+distributed layer.
 
 ### Cache Invalidation
 
@@ -247,18 +258,27 @@ the automatic L1→L2 fallback and per-tenant invalidation continue to work unch
 app.MapPost("/api/tenants/{tenantId}/settings", async (
     string tenantId,
     UpdateRequest request,
-    IMultiTierCache cache,
+    ITenantContextCache cache,
     ITenantDatabase db) =>
 {
     // Update database
     await db.UpdateTenantAsync(tenantId, request);
     
-    // Invalidate cache
+    // Invalidate individual entries
     await cache.RemoveAsync(tenantId, "tenant-info:TenantInfo");
     await cache.RemoveAsync(tenantId, "tenant-settings");
     
     return Results.Ok();
 });
+```
+
+To clear **everything** for a tenant in one call, use `RemoveAllTenantAsync`. Each
+entry is written with a per-tenant tag, so this maps to a single FusionCache
+`RemoveByTagAsync` — it evicts across both L1 and L2, and (with the Redis backplane)
+across all nodes:
+
+```csharp
+await cache.RemoveAllTenantAsync(tenantId);
 ```
 
 ## 📊 Performance
@@ -304,9 +324,10 @@ dotnet test  --collect:"XPlat Code Coverage"
 - [x] Tenant context injection
 - [x] Multiple URL patterns
 - [x] Tenant Context Resolution from Authentication Token 
-- [x] Redis backend
-- [x] Hazelcast backend
-- [x] Custom L2 backend (any `ICacheLayer`)
+- [x] FusionCache-backed two-tier engine
+- [x] Redis backend (distributed cache + backplane)
+- [x] Custom L2 backend (any `IDistributedCache`)
+- [x] Per-tenant bulk invalidation via FusionCache tagging
 - [ ] OpenTelemetry metrics
 - [ ] Cache preloading strategies
 - [ ] GraphQL support
@@ -348,12 +369,12 @@ This project is licensed under the MIT License - see [LICENSE](./LICENSE) file f
 ## 📦 NuGet
 
 ```bash
-dotnet add package MultiTierCache
+dotnet add package TenantContextCache
 ```
 
 Or via NuGet Package Manager:
 ```
-Install-Package MultiTierCache
+Install-Package TenantContextCache
 ```
 
 ## 🎯 Use Cases

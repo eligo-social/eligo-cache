@@ -4,7 +4,7 @@ using Microsoft.Extensions.Primitives;
 using Moq;
 using NUnit.Framework;
 
-namespace MultiTierCache.Tests;
+namespace TenantContextCache.Tests;
 
 [TestFixture]
 public class MultiPatternRouteResolverTests

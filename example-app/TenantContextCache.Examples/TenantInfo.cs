@@ -1,4 +1,4 @@
-namespace MultiTierCache.Examples;
+namespace TenantContextCache.Examples;
 
 public class TenantInfo
 {

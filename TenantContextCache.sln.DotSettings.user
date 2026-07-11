@@ -2,9 +2,9 @@
 	<s:String x:Key="/Default/CodeInspection/ExcludedFiles/FilesAndFoldersToSkip2/=7020124F_002D9FFC_002D4AC3_002D8F3D_002DAAB8E0240759_002Ff_003AObject_002Ecs_002Fl_003A_002E_002E_003F_002E_002E_003F_002E_002E_003FLibrary_003FApplication_0020Support_003FJetBrains_003FRider2026_002E1_003Fresharper_002Dhost_003FDecompilerCache_003Fdecompiler_003Ff84c1da50b214a4c8667e84ab11bba79d83a00_003Fda_003Fc95c3ed2_003FObject_002Ecs/@EntryIndexedValue">ForceIncluded</s:String>
 	<s:String x:Key="/Default/Environment/UnitTesting/UnitTestSessionStore/Sessions/=18347866_002Dcdd9_002D420f_002D9f0e_002Dd18c22cd1ae1/@EntryIndexedValue">&lt;SessionState ContinuousTestingMode="0" IsActive="True" Name="InMemoryL1CacheTests" xmlns="urn:schemas-jetbrains-com:jetbrains-ut-session"&gt;
   &lt;TestAncestor&gt;
-    &lt;TestId&gt;NUnit3x::B2C3D4E5-F6A7-48B9-C0D1-E2F3A4B5C6D7::net8.0::MultiTierCache.Tests.InMemoryL1CacheTest&lt;/TestId&gt;
-    &lt;TestId&gt;NUnit3x::B2C3D4E5-F6A7-48B9-C0D1-E2F3A4B5C6D7::net8.0::MultiTierCache.Tests.CacheIntegrationTests&lt;/TestId&gt;
-    &lt;TestId&gt;NUnit3x::B2C3D4E5-F6A7-48B9-C0D1-E2F3A4B5C6D7::net8.0::MultiTierCache.Tests.MultiTierCacheTests&lt;/TestId&gt;
-    &lt;TestId&gt;NUnit3x::B2C3D4E5-F6A7-48B9-C0D1-E2F3A4B5C6D7::net8.0::MultiTierCache.Tests.RegexTenantResolverTests&lt;/TestId&gt;
+    &lt;TestId&gt;NUnit3x::B2C3D4E5-F6A7-48B9-C0D1-E2F3A4B5C6D7::net8.0::TenantContextCache.Tests.InMemoryL1CacheTest&lt;/TestId&gt;
+    &lt;TestId&gt;NUnit3x::B2C3D4E5-F6A7-48B9-C0D1-E2F3A4B5C6D7::net8.0::TenantContextCache.Tests.CacheIntegrationTests&lt;/TestId&gt;
+    &lt;TestId&gt;NUnit3x::B2C3D4E5-F6A7-48B9-C0D1-E2F3A4B5C6D7::net8.0::TenantContextCache.Tests.TenantContextCacheTests&lt;/TestId&gt;
+    &lt;TestId&gt;NUnit3x::B2C3D4E5-F6A7-48B9-C0D1-E2F3A4B5C6D7::net8.0::TenantContextCache.Tests.RegexTenantResolverTests&lt;/TestId&gt;
   &lt;/TestAncestor&gt;
 &lt;/SessionState&gt;</s:String></wpf:ResourceDictionary>

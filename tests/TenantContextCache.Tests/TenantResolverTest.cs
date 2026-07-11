@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Http;
 using Moq;
 using NUnit.Framework;
 
-namespace MultiTierCache.Tests;
+namespace TenantContextCache.Tests;
 
 [TestFixture]
     public class RegexTenantResolverTests

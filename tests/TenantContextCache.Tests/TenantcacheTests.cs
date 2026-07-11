@@ -2,18 +2,18 @@ using FluentAssertions;
 using Moq;
 using NUnit.Framework;
 
-namespace MultiTierCache.Tests;
+namespace TenantContextCache.Tests;
 
 [TestFixture]
 public class TenantCacheTests
 {
-    private Mock<IMultiTierCache> _multiCacheMock;
+    private Mock<ITenantContextCache> _multiCacheMock;
     private TenantCache _tenantCache;
 
     [SetUp]
     public void Setup()
     {
-        _multiCacheMock = new Mock<IMultiTierCache>();
+        _multiCacheMock = new Mock<ITenantContextCache>();
         _tenantCache = new TenantCache(_multiCacheMock.Object, "tenant123");
     }
 

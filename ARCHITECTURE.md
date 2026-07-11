@@ -97,7 +97,7 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ITenantDatabase, TenantDatabase>();
 
 // Configure cache with tenant data fetch lambda
-builder.Services.AddMultiTierCache(cache =>
+builder.Services.AddTenantContextCache(cache =>
 {
     cache
         .WithL1TimeToLive(TimeSpan.FromMinutes(5))
@@ -108,7 +108,7 @@ builder.Services.AddMultiTierCache(cache =>
 var app = builder.Build();
 
 // Register middleware with tenant data fetch
-app.UseMultiTierCache(
+app.UseTenantContextCache(
     @"/api/tenants/(?<tenant>[^/]+)",
     async (tenantId) =>
     {
@@ -118,7 +118,7 @@ app.UseMultiTierCache(
 );
 
 // Or with multiple data sources:
-app.UseMultiTierCacheWithResolvers(
+app.UseTenantContextCacheWithResolvers(
     @"/api/tenants/(?<tenant>[^/]+)",
     // Primary: TenantInfo
     async (tenantId) =>
@@ -362,7 +362,7 @@ public class RequestLoggingMiddleware
 
 ```csharp
 // Load settings in middleware if needed
-app.UseMultiTierCacheWithResolvers(
+app.UseTenantContextCacheWithResolvers(
     @"/api/tenants/(?<tenant>[^/]+)",
     // Primary fetch
     async (tenantId) =>
@@ -407,7 +407,7 @@ app.MapPost("/api/tenants/{tenantId}/settings", async (
     string tenantId,
     UpdateSettingsRequest request,
     ITenantDatabase db,
-    IMultiTierCache cache) =>
+    ITenantContextCache cache) =>
 {
     // Update in database
     await db.UpdateTenantSettingsAsync(tenantId, request);
@@ -425,7 +425,7 @@ app.MapPost("/api/tenants/{tenantId}/settings", async (
 ```csharp
 app.MapPost("/api/tenants/{tenantId}/cache/purge", async (
     string tenantId,
-    IMultiTierCache cache) =>
+    ITenantContextCache cache) =>
 {
     // Clear ALL cache for this tenant
     await cache.RemoveAllTenantAsync(tenantId);
@@ -478,7 +478,7 @@ Improvement:
 **Solution**:
 ```csharp
 // Check regex pattern matches your URL
-app.UseMultiTierCache(@"/api/tenants/(?<tenant>[^/]+)");
+app.UseTenantContextCache(@"/api/tenants/(?<tenant>[^/]+)");
 
 // Test with exact URL:
 // GET /api/tenants/acme/users → Should extract "acme"

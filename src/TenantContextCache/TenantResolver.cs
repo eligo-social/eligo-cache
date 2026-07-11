@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace MultiTierCache;
+namespace TenantContextCache;
 
     /// <summary>
     /// Converts ASP.NET-style route templates such as "/api/tenants/{tenantId:int}"
