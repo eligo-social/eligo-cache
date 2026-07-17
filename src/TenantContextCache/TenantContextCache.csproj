@@ -7,16 +7,17 @@
     <LangVersion>latest</LangVersion>
       
       <OutputType>Library</OutputType>
-      
+      <IsPackable>true</IsPackable>
+
     <!-- NuGet Package Metadata -->
     <PackageId>tenant-context-cache</PackageId>
     <Version>1.0.0</Version>
     <Title>TenantContextCache</Title>
-    <Authors>Your Name</Authors>
+    <Authors>eligo-social</Authors>
     <Description>A production-ready multi-tiered caching library for ASP.NET Core with automatic tenant context injection and multiple URL pattern support, powered by FusionCache (hybrid L1 in-memory + L2 distributed cache with stampede protection, fail-safe, a Redis backplane and tag-based invalidation).</Description>
-    <PackageProjectUrl>https://github.com/yourusername/tenant-context-cache</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/eligo-social/eligo-cache</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <RepositoryUrl>https://github.com/yourusername/tenant-context-cache</RepositoryUrl>
+    <RepositoryUrl>https://github.com/eligo-social/eligo-cache</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>cache;caching;multitier;hybrid-cache;fusioncache;distributed-cache;tenant;aspnetcore;middleware;redis</PackageTags>
     <PackageReleaseNotes>

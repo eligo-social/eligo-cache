@@ -1,0 +1,76 @@
+name: Publish NuGet Package
+run-name: Publish NuGet Package
+
+on:
+  release:
+    types: [published]
+
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version to publish (e.g. 1.0.1). Leave empty to use the .csproj version."
+        required: false
+        type: string
+
+concurrency:
+  group: "publish-package-${{ github.ref }}"
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  PROJECT: src/TenantContextCache/TenantContextCache.csproj
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [ -z "$VERSION" ] && [ "${{ github.event_name }}" = "release" ]; then
+            # Strip an optional leading "v" from the release tag (e.g. v1.0.1 -> 1.0.1)
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ -n "$VERSION" ]; then
+            echo "Publishing version $VERSION"
+          else
+            echo "Publishing version from .csproj"
+          fi
+
+      - name: Restore
+        run: dotnet restore ${{ env.PROJECT }}
+
+      - name: Build
+        run: dotnet build ${{ env.PROJECT }} --configuration Release --no-restore
+
+      - name: Pack
+        run: |
+          VERSION_ARG=""
+          if [ -n "${{ steps.version.outputs.value }}" ]; then
+            VERSION_ARG="-p:Version=${{ steps.version.outputs.value }}"
+          fi
+          dotnet pack ${{ env.PROJECT }} \
+            --configuration Release \
+            --no-build \
+            --output ${{ github.workspace }}/artifacts \
+            $VERSION_ARG
+
+      - name: Push to GitHub Packages
+        run: |
+          dotnet nuget push "${{ github.workspace }}/artifacts/*.nupkg" \
+            --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
+            --api-key "${{ secrets.GITHUB_TOKEN }}" \
+            --skip-duplicate

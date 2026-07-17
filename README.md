@@ -33,9 +33,13 @@ The two-tier caching engine is powered by [**FusionCache**](https://github.com/Z
 
 ### 1. Install NuGet Package
 
+The package is published to **GitHub Packages** as `tenant-context-cache`:
+
 ```bash
-dotnet add package TenantContextCache
+dotnet add package tenant-context-cache
 ```
+
+> This requires a one-time feed setup so NuGet can authenticate to GitHub Packages. See [📦 Installing from GitHub Packages](#-installing-from-github-packages) below.
 
 ### 2. Configure in Program.cs
 
@@ -366,15 +370,71 @@ This project is licensed under the MIT License - see [LICENSE](./LICENSE) file f
 - **Discussions:** [GitHub Discussions](https://github.com/eligo-social/eligo-cache/discussions)
 - **Email:** support@example.com
 
-## 📦 NuGet
+## 📦 Installing from GitHub Packages
+
+This library is published to [GitHub Packages](https://github.com/eligo-social/eligo-cache/packages) under the id **`tenant-context-cache`**. Because GitHub Packages feeds are authenticated, consumers need a one-time setup.
+
+### 1. Create a Personal Access Token (PAT)
+
+Create a **classic** PAT with the `read:packages` scope at
+[github.com/settings/tokens](https://github.com/settings/tokens).
+
+### 2. Add the GitHub Packages feed
+
+Add a `nuget.config` next to your solution (do **not** commit the token — reference it via an environment variable):
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="github" value="https://nuget.pkg.github.com/eligo-social/index.json" />
+  </packageSources>
+  <packageSourceCredentials>
+    <github>
+      <add key="Username" value="YOUR_GITHUB_USERNAME" />
+      <add key="ClearTextPassword" value="%GITHUB_PACKAGES_TOKEN%" />
+    </github>
+  </packageSourceCredentials>
+</configuration>
+```
+
+Then export the token before restoring:
 
 ```bash
-dotnet add package TenantContextCache
+export GITHUB_PACKAGES_TOKEN=ghp_your_token_here
 ```
 
-Or via NuGet Package Manager:
+Alternatively, register the source from the CLI instead of a `nuget.config`:
+
+```bash
+dotnet nuget add source "https://nuget.pkg.github.com/eligo-social/index.json" \
+  --name github \
+  --username YOUR_GITHUB_USERNAME \
+  --password $GITHUB_PACKAGES_TOKEN \
+  --store-password-in-clear-text
 ```
-Install-Package TenantContextCache
+
+### 3. Install the package
+
+```bash
+dotnet add package tenant-context-cache
+```
+
+Or via the NuGet Package Manager console:
+
+```
+Install-Package tenant-context-cache
+```
+
+### CI/CD
+
+In GitHub Actions inside the same organization, use the built-in `GITHUB_TOKEN` instead of a PAT:
+
+```yaml
+- run: dotnet nuget add source "https://nuget.pkg.github.com/eligo-social/index.json" \
+    --name github --username eligo-social \
+    --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text
+- run: dotnet restore
 ```
 
 ## 🎯 Use Cases
