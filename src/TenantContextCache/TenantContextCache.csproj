@@ -21,10 +21,14 @@
     <RepositoryType>git</RepositoryType>
     <PackageTags>cache;caching;multitier;hybrid-cache;fusioncache;distributed-cache;tenant;aspnetcore;middleware</PackageTags>
     <PackageReleaseNotes>
+1.0.0 - first stable release. No hard Redis dependency: supply the L2 layer as any
+IDistributedCache via WithCustomL2(...). (0.0.1 was an earlier prototype that bundled
+StackExchange.Redis.)
+
 - Hybrid caching powered by FusionCache (L1 in-memory + L2 distributed)
 - Cache stampede protection and fail-safe out of the box
 - Per-tenant bulk invalidation via FusionCache tagging
-- Automatic tenant context resolution
+- Automatic tenant context resolution and injection (WithTenantDataFetch&lt;TTenantInfo&gt;)
 - Multiple URL pattern support
 - Bring your own IDistributedCache backend for L2 (Redis, SQL Server, etc.)
     </PackageReleaseNotes>
