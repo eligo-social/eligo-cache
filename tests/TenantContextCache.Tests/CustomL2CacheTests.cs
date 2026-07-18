@@ -17,10 +17,18 @@ public class CustomL2CacheTests
     /// <summary>Parameterless custom L2 for the generic WithCustomL2&lt;T&gt; overload.</summary>
     private sealed class ParameterlessCustomL2 : InProcessDistributedCache { }
 
+    private sealed class TenantStub { }
+
+    // A tenant-data fetch is required, but these tests exercise the L2 cache layer directly,
+    // so a no-op fetch is enough.
     private static ITenantContextCache BuildCache(Action<TenantContextCacheBuilder> configure)
     {
         var services = new ServiceCollection();
-        services.AddTenantContextCache(configure);
+        services.AddTenantContextCache(c =>
+        {
+            c.WithTenantDataFetch<TenantStub>(_ => Task.FromResult<TenantStub>(null));
+            configure(c);
+        });
         return services.BuildServiceProvider().GetRequiredService<ITenantContextCache>();
     }
 

@@ -8,6 +8,31 @@ namespace TenantContextCache.Tests;
 [TestFixture]
 public class TenantResolutionMiddlewareTests
 {
+    private sealed class Company
+    {
+        public string Name { get; set; }
+    }
+
+    /// <summary>Records what it was asked for and returns a preconfigured result.</summary>
+    private sealed class StubTenantInfoProvider : ITenantInfoProvider
+    {
+        private readonly object _result;
+
+        public StubTenantInfoProvider(object result) => _result = result;
+
+        public bool Called { get; private set; }
+        public string ReceivedTenantId { get; private set; }
+
+        public Type TenantInfoType => typeof(Company);
+
+        public Task<object> GetTenantInfoAsync(string tenantId)
+        {
+            Called = true;
+            ReceivedTenantId = tenantId;
+            return Task.FromResult(_result);
+        }
+    }
+
     private static Mock<HttpContext> CreateContext(out IDictionary<object, object> items)
     {
         items = new Dictionary<object, object>();
@@ -23,18 +48,15 @@ public class TenantResolutionMiddlewareTests
         return mock.Object;
     }
 
-    private static List<Func<string, Task<(string key, object value)>>> DataResolvers(
-        params Func<string, Task<(string key, object value)>>[] resolvers) => new(resolvers);
-
     [Test]
     public async Task InvokeAsync_SetsTenantId_WhenResolved()
     {
         var ctx = CreateContext(out var items);
         var nextCalled = false;
         RequestDelegate next = _ => { nextCalled = true; return Task.CompletedTask; };
-        var middleware = new TenantResolutionMiddleware(next, ResolverReturning("acme"), new NullTenantInfoProvider());
+        var middleware = new TenantResolutionMiddleware(next, ResolverReturning("acme"));
 
-        await middleware.InvokeAsync(ctx.Object);
+        await middleware.InvokeAsync(ctx.Object, new StubTenantInfoProvider(null));
 
         items.Should().ContainKey("TenantId");
         items["TenantId"].Should().Be("acme");
@@ -43,112 +65,59 @@ public class TenantResolutionMiddlewareTests
 
     [TestCase(null)]
     [TestCase("")]
-    public async Task InvokeAsync_DoesNotSetTenantId_WhenNotResolved(string tenantId)
+    public async Task InvokeAsync_DoesNotSetTenantId_OrFetch_WhenNotResolved(string tenantId)
     {
         var ctx = CreateContext(out var items);
         var nextCalled = false;
         RequestDelegate next = _ => { nextCalled = true; return Task.CompletedTask; };
-        var middleware = new TenantResolutionMiddleware(next, ResolverReturning(tenantId), new NullTenantInfoProvider());
+        var provider = new StubTenantInfoProvider(new Company());
+        var middleware = new TenantResolutionMiddleware(next, ResolverReturning(tenantId));
 
-        await middleware.InvokeAsync(ctx.Object);
+        await middleware.InvokeAsync(ctx.Object, provider);
 
         items.Should().NotContainKey("TenantId");
+        provider.Called.Should().BeFalse(); // no tenant -> no fetch
         nextCalled.Should().BeTrue(); // pipeline continues even without a tenant
     }
 
     [Test]
-    public async Task InvokeAsync_RunsDataResolvers_AndPopulatesItems()
+    public async Task InvokeAsync_InjectsTenantInfo_UnderTypeKey_WhenProviderReturnsData()
     {
         var ctx = CreateContext(out var items);
-        var company = new { Name = "Acme" };
-        var receivedTenantId = (string)null;
-        var resolvers = DataResolvers(tenantId =>
-        {
-            receivedTenantId = tenantId;
-            return Task.FromResult<(string, object)>(("Company", company));
-        });
-        var middleware = new TenantResolutionMiddleware(
-            _ => Task.CompletedTask, ResolverReturning("acme"), new NullTenantInfoProvider(), resolvers);
+        var company = new Company { Name = "Acme" };
+        var provider = new StubTenantInfoProvider(company);
+        var middleware = new TenantResolutionMiddleware(_ => Task.CompletedTask, ResolverReturning("acme"));
 
-        await middleware.InvokeAsync(ctx.Object);
+        await middleware.InvokeAsync(ctx.Object, provider);
 
-        receivedTenantId.Should().Be("acme");
-        items.Should().ContainKey("Company");
-        items["Company"].Should().BeSameAs(company);
+        provider.ReceivedTenantId.Should().Be("acme");
+        items.Should().ContainKey("TenantInfo:Company");
+        items["TenantInfo:Company"].Should().BeSameAs(company);
     }
 
     [Test]
-    public async Task InvokeAsync_DoesNotRunDataResolvers_WhenTenantNotResolved()
+    public async Task InvokeAsync_DoesNotInjectTenantInfo_WhenProviderReturnsNull()
     {
         var ctx = CreateContext(out var items);
-        var resolverRan = false;
-        var resolvers = DataResolvers(_ =>
-        {
-            resolverRan = true;
-            return Task.FromResult<(string, object)>(("Company", new object()));
-        });
-        var middleware = new TenantResolutionMiddleware(
-            _ => Task.CompletedTask, ResolverReturning(null), new NullTenantInfoProvider(), resolvers);
+        var provider = new StubTenantInfoProvider(null);
+        var middleware = new TenantResolutionMiddleware(_ => Task.CompletedTask, ResolverReturning("acme"));
 
-        await middleware.InvokeAsync(ctx.Object);
+        await middleware.InvokeAsync(ctx.Object, provider);
 
-        resolverRan.Should().BeFalse();
-    }
-
-    [TestCase(null, "value")]
-    [TestCase("key", null)]
-    [TestCase(null, null)]
-    public async Task InvokeAsync_SkipsDataResolverResult_WhenKeyOrValueIsNull(string key, string value)
-    {
-        var ctx = CreateContext(out var items);
-        var resolvers = DataResolvers(_ => Task.FromResult<(string, object)>((key, value)));
-        var middleware = new TenantResolutionMiddleware(
-            _ => Task.CompletedTask, ResolverReturning("acme"), new NullTenantInfoProvider(), resolvers);
-
-        await middleware.InvokeAsync(ctx.Object);
-
-        // Only the TenantId entry should be present.
+        provider.Called.Should().BeTrue();
         items.Keys.Should().BeEquivalentTo(new object[] { "TenantId" });
     }
 
     [Test]
-    public async Task InvokeAsync_SwallowsResolverException_AndContinuesPipeline()
+    public async Task InvokeAsync_CallsNext_AfterInjectingTenantInfo()
     {
-        var ctx = CreateContext(out var items);
-        var nextCalled = false;
-        var secondResolverRan = false;
-        var resolvers = DataResolvers(
-            _ => throw new InvalidOperationException("boom"),
-            _ =>
-            {
-                secondResolverRan = true;
-                return Task.FromResult<(string, object)>(("Ok", "value"));
-            });
-        var middleware = new TenantResolutionMiddleware(
-            _ => { nextCalled = true; return Task.CompletedTask; },
-            ResolverReturning("acme"), new NullTenantInfoProvider(), resolvers);
-
-        // Act - should not throw despite the failing resolver
-        await middleware.InvokeAsync(ctx.Object);
-
-        // Assert - failure is isolated: later resolvers and the pipeline still run
-        secondResolverRan.Should().BeTrue();
-        items.Should().ContainKey("Ok");
-        nextCalled.Should().BeTrue();
-    }
-
-    [Test]
-    public async Task InvokeAsync_WithNullDataResolvers_UsesEmptyListAndRunsPipeline()
-    {
-        var ctx = CreateContext(out var items);
+        var ctx = CreateContext(out _);
         var nextCalled = false;
         var middleware = new TenantResolutionMiddleware(
-            _ => { nextCalled = true; return Task.CompletedTask; },
-            ResolverReturning("acme"), new NullTenantInfoProvider(), tenantDataResolvers: null);
+            _ => { nextCalled = true; return Task.CompletedTask; }, ResolverReturning("acme"));
 
-        await middleware.InvokeAsync(ctx.Object);
+        await middleware.InvokeAsync(ctx.Object, new StubTenantInfoProvider(new Company()));
 
-        items["TenantId"].Should().Be("acme");
         nextCalled.Should().BeTrue();
     }
 }

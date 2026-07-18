@@ -96,44 +96,24 @@ var builder = WebApplicationBuilder.CreateBuilder(args);
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ITenantDatabase, TenantDatabase>();
 
-// Configure cache with tenant data fetch lambda
+// Configure cache. The tenant-data fetch (required) is the source the middleware calls
+// cache-first on each request and injects into the context; the L2 backend is any
+// IDistributedCache. The (sp, tenantId) overload resolves scoped services from the request
+// scope.
 builder.Services.AddTenantContextCache(cache =>
 {
     cache
         .WithL1TimeToLive(TimeSpan.FromMinutes(5))
         .WithL2TimeToLive(TimeSpan.FromHours(1))
+        .WithTenantDataFetch<TenantInfo>((sp, tenantId) =>
+            sp.GetRequiredService<ITenantDatabase>().GetTenantAsync(tenantId))
         .WithCustomL2(_ => new MyDistributedCache("localhost:6379")); // any IDistributedCache (Redis, etc.)
 });
 
 var app = builder.Build();
 
-// Register middleware with tenant data fetch
-app.UseTenantContextCache(
-    @"/api/tenants/(?<tenant>[^/]+)",
-    async (tenantId) =>
-    {
-        var db = app.Services.GetRequiredService<ITenantDatabase>();
-        return await db.GetTenantAsync(tenantId);
-    }
-);
-
-// Or with multiple data sources:
-app.UseTenantContextCacheWithResolvers(
-    @"/api/tenants/(?<tenant>[^/]+)",
-    // Primary: TenantInfo
-    async (tenantId) =>
-    {
-        var db = app.Services.GetRequiredService<ITenantDatabase>();
-        return await db.GetTenantAsync(tenantId);
-    },
-    // Secondary: TenantSettings
-    async (tenantId) =>
-    {
-        var db = app.Services.GetRequiredService<ITenantDatabase>();
-        var settings = await db.GetTenantSettingsAsync(tenantId);
-        return ("TenantInfo:TenantSettings", (object)settings);
-    }
-);
+// The middleware only picks how the tenant id is resolved; the fetch was configured above.
+app.UseTenantContextCache(@"/api/tenants/(?<tenant>[^/]+)");
 
 app.Run();
 ```
@@ -360,39 +340,39 @@ public class RequestLoggingMiddleware
 
 ### Pattern 5: Caching Additional Tenant Data
 
+The middleware injects a single tenant-info type (`WithTenantDataFetch<T>`). To carry related
+data such as settings or features, compose them into that type inside the fetch — the whole
+aggregate is then cached and injected together:
+
 ```csharp
-// Load settings in middleware if needed
-app.UseTenantContextCacheWithResolvers(
-    @"/api/tenants/(?<tenant>[^/]+)",
-    // Primary fetch
-    async (tenantId) =>
-    {
-        var db = app.Services.GetRequiredService<ITenantDatabase>();
-        return await db.GetTenantAsync(tenantId);
-    },
-    // Additional resolvers for related data
-    async (tenantId) =>
-    {
-        var db = app.Services.GetRequiredService<ITenantDatabase>();
-        var settings = await db.GetTenantSettingsAsync(tenantId);
-        return ("TenantInfo:TenantSettings", (object)settings);
-    },
-    async (tenantId) =>
-    {
-        var db = app.Services.GetRequiredService<ITenantDatabase>();
-        var features = await db.GetTenantFeaturesAsync(tenantId);
-        return ("TenantInfo:Features", (object)features);
-    }
-);
+public class TenantInfo
+{
+    public string Id { get; set; }
+    public string Name { get; set; }
+    public TenantSettings Settings { get; set; }
+    public Features Features { get; set; }
+}
+
+builder.Services.AddTenantContextCache(cache =>
+{
+    cache
+        .WithTenantDataFetch<TenantInfo>(async (sp, tenantId) =>
+        {
+            var db = sp.GetRequiredService<ITenantDatabase>();
+            var tenant = await db.GetTenantAsync(tenantId);
+            if (tenant == null) return null;
+            tenant.Settings = await db.GetTenantSettingsAsync(tenantId);
+            tenant.Features = await db.GetTenantFeaturesAsync(tenantId);
+            return tenant;
+        })
+        .WithCustomL2(_ => new MyDistributedCache("localhost:6379"));
+});
 
 // Access in endpoints
 app.MapGet("/api/info", (ITenantContextAccessor ctx) =>
 {
     var info = ctx.GetTenantInfo<TenantInfo>();
-    var settings = ctx.GetTenantInfo<TenantSettings>();
-    var features = ctx.GetTenantInfo<Features>();
-
-    return Results.Ok(new { info, settings, features });
+    return Results.Ok(new { info, info?.Settings, info?.Features });
 });
 ```
 

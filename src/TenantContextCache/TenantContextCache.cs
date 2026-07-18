@@ -133,54 +133,64 @@ namespace TenantContextCache
     }
 
     /// <summary>
-    /// Provides tenant information from cache or database
+    /// Fetches tenant information — cache-first, then the configured data source — and exposes
+    /// the configured tenant-info type so the resolution middleware can inject the result into
+    /// the request context under a type-derived key.
     /// </summary>
     public interface ITenantInfoProvider
     {
-        Task<T> GetTenantInfoAsync<T>(string tenantId);
+        /// <summary>The tenant-info type this provider produces, captured at registration.</summary>
+        Type TenantInfoType { get; }
+
+        /// <summary>
+        /// Returns the tenant info for <paramref name="tenantId"/>, served from the multi-tier
+        /// cache when present and otherwise fetched from the configured data source and cached.
+        /// Returns <c>null</c> when the tenant id is empty or the source has no data.
+        /// </summary>
+        Task<object> GetTenantInfoAsync(string tenantId);
     }
 
     /// <summary>
-    /// Default tenant info provider with cache-backed database fetch
+    /// Default cache-backed tenant info provider. Reads through the multi-tier
+    /// <see cref="ITenantContextCache"/> and falls back to the registered data fetch on a miss,
+    /// re-caching what it fetches. Entries are stored under the tenant so they participate in
+    /// per-tenant bulk invalidation.
     /// </summary>
-    public class TenantInfoProvider : ITenantInfoProvider
+    public class TenantInfoProvider<TTenantInfo> : ITenantInfoProvider
+        where TTenantInfo : class
     {
-        private readonly ITenantCache _cache;
-        private readonly Func<string, Task<object>> _databaseFetch;
-        private readonly string _cacheKeyPrefix;
+        private readonly ITenantContextCache _cache;
+        private readonly Func<string, Task<TTenantInfo>> _dataFetch;
+        private readonly string _cacheKey;
 
         public TenantInfoProvider(
-            ITenantCache cache,
-            Func<string, Task<object>> databaseFetch,
+            ITenantContextCache cache,
+            Func<string, Task<TTenantInfo>> dataFetch,
             string cacheKeyPrefix = "tenant-info")
         {
             _cache = cache ?? throw new ArgumentNullException(nameof(cache));
-            _databaseFetch = databaseFetch ?? throw new ArgumentNullException(nameof(databaseFetch));
-            _cacheKeyPrefix = cacheKeyPrefix;
+            _dataFetch = dataFetch ?? throw new ArgumentNullException(nameof(dataFetch));
+            _cacheKey = $"{cacheKeyPrefix}:{typeof(TTenantInfo).Name}";
         }
 
-        public async Task<T> GetTenantInfoAsync<T>(string tenantId)
+        public Type TenantInfoType => typeof(TTenantInfo);
+
+        public async Task<object> GetTenantInfoAsync(string tenantId)
         {
             if (string.IsNullOrEmpty(tenantId))
-                return default;
+                return null;
 
-            var cacheKey = $"{_cacheKeyPrefix}:{typeof(T).Name}";
-
-            // Try cache first
-            var cached = await _cache.GetAsync<T>(cacheKey);
+            // Try the multi-tier cache first (L1 -> L2).
+            var cached = await _cache.GetAsync<TTenantInfo>(tenantId, _cacheKey);
             if (cached != null)
                 return cached;
 
-            // Cache miss - fetch from database
-            var data = await _databaseFetch(tenantId);
+            // Cache miss - fetch from the configured data source and cache the result.
+            var data = await _dataFetch(tenantId);
             if (data != null)
-            {
-                var typedData = (T)Convert.ChangeType(data, typeof(T));
-                await _cache.SetAsync(cacheKey, typedData);
-                return typedData;
-            }
+                await _cache.SetAsync(tenantId, _cacheKey, data);
 
-            return default;
+            return data;
         }
     }
 
@@ -232,51 +242,35 @@ namespace TenantContextCache
     }
 
     /// <summary>
-    /// Middleware to extract tenant, resolve tenant info, and inject into HttpContext
+    /// Middleware that resolves the tenant for each request, fetches its tenant info through the
+    /// multi-tier cache, and injects both the tenant id and the tenant info into
+    /// <see cref="HttpContext.Items"/> for the rest of the pipeline (read back via
+    /// <see cref="ITenantContextAccessor"/>).
     /// </summary>
     public class TenantResolutionMiddleware
     {
         private readonly RequestDelegate _next;
         private readonly ITenantResolver _tenantResolver;
-        private readonly ITenantInfoProvider _tenantInfoProvider;
-        private readonly List<Func<string, Task<(string key, object value)>>> _tenantDataResolvers;
 
-        public TenantResolutionMiddleware(
-            RequestDelegate next,
-            ITenantResolver tenantResolver,
-            ITenantInfoProvider tenantInfoProvider,
-            List<Func<string, Task<(string key, object value)>>> tenantDataResolvers = null)
+        public TenantResolutionMiddleware(RequestDelegate next, ITenantResolver tenantResolver)
         {
-            _next = next;
-            _tenantResolver = tenantResolver;
-            _tenantInfoProvider = tenantInfoProvider;
-            _tenantDataResolvers = tenantDataResolvers ?? new List<Func<string, Task<(string key, object value)>>>();
+            _next = next ?? throw new ArgumentNullException(nameof(next));
+            _tenantResolver = tenantResolver ?? throw new ArgumentNullException(nameof(tenantResolver));
         }
 
-        public async Task InvokeAsync(HttpContext context)
+        // tenantInfoProvider is injected per-request from the request services (scoped), so the
+        // fetch runs against the tenant resolved on this request.
+        public async Task InvokeAsync(HttpContext context, ITenantInfoProvider tenantInfoProvider)
         {
             var tenantId = _tenantResolver.ResolveTenant(context);
-            
+
             if (!string.IsNullOrEmpty(tenantId))
             {
                 context.Items["TenantId"] = tenantId;
 
-                // Resolve additional tenant data if providers registered
-                foreach (var resolver in _tenantDataResolvers)
-                {
-                    try
-                    {
-                        var (key, value) = await resolver(tenantId);
-                        if (key != null && value != null)
-                        {
-                            context.Items[key] = value;
-                        }
-                    }
-                    catch
-                    {
-                        // Log but don't fail the request
-                    }
-                }
+                var tenantInfo = await tenantInfoProvider.GetTenantInfoAsync(tenantId);
+                if (tenantInfo != null)
+                    context.Items[$"TenantInfo:{tenantInfoProvider.TenantInfoType.Name}"] = tenantInfo;
             }
 
             await _next(context);
@@ -294,38 +288,30 @@ namespace TenantContextCache
         {
             var builder = new TenantContextCacheBuilder(services);
             configure(builder);
+            builder.Build();
             return services;
         }
 
         /// <summary>
-        /// Use middleware with single regex pattern (backward compatible)
+        /// Resolve the tenant from a single regex pattern with a named "tenant" capture group.
+        /// The tenant data source is configured once via
+        /// <see cref="TenantContextCacheBuilder.WithTenantDataFetch{TTenantInfo}"/>.
         /// </summary>
         public static IApplicationBuilder UseTenantContextCache(
             this IApplicationBuilder app,
-            string tenantPattern,
-            Func<string, Task<object>> tenantDataFetch = null)
+            string tenantPattern)
         {
             var tenantResolver = new RegexTenantResolver(tenantPattern);
-            
-            if (tenantDataFetch != null)
-            {
-                var tenantCache = app.ApplicationServices.GetRequiredService<ITenantCache>();
-                var tenantInfoProvider = new TenantInfoProvider(tenantCache, tenantDataFetch);
-                return app.UseMiddleware<TenantResolutionMiddleware>(tenantResolver, tenantInfoProvider, new List<Func<string, Task<(string, object)>>>());
-            }
-
-            var emptyProvider = new NullTenantInfoProvider();
-            return app.UseMiddleware<TenantResolutionMiddleware>(tenantResolver, emptyProvider, new List<Func<string, Task<(string, object)>>>());
+            return app.UseMiddleware<TenantResolutionMiddleware>(tenantResolver);
         }
 
         /// <summary>
-        /// Use middleware with an ASP.NET-style route template instead of a raw regex.
+        /// Resolve the tenant from an ASP.NET-style route template instead of a raw regex.
         /// For example "/api/tenants/{tenantId:int}" matches numeric tenant ids only.
         /// The template is translated to a regex with a named "tenant" capture group.
         /// </summary>
         /// <param name="app">The application builder.</param>
         /// <param name="routeTemplate">Route template, e.g. "/api/tenants/{tenantId:int}".</param>
-        /// <param name="tenantDataFetch">Optional tenant data fetch callback.</param>
         /// <param name="tenantParameterName">
         /// Name of the template parameter that holds the tenant. Defaults to the first
         /// placeholder when omitted.
@@ -333,77 +319,33 @@ namespace TenantContextCache
         public static IApplicationBuilder UseTenantContextCacheWithTemplate(
             this IApplicationBuilder app,
             string routeTemplate,
-            Func<string, Task<object>> tenantDataFetch = null,
             string tenantParameterName = null)
         {
             var pattern = RouteTemplateConverter.ToRegexPattern(routeTemplate, tenantParameterName);
-            return app.UseTenantContextCache(pattern, tenantDataFetch);
+            return app.UseTenantContextCache(pattern);
         }
 
         /// <summary>
-        /// Use middleware with multiple patterns via MultiPatternRouteResolver
+        /// Resolve the tenant from multiple patterns via MultiPatternRouteResolver.
         /// Supports: /tenants/{tenantId}/**, /Tenants/{tenantSlug}/**, headers, subdomains, etc.
         /// </summary>
         public static IApplicationBuilder UseTenantContextCacheWithPatterns(
             this IApplicationBuilder app,
-            Action<MultiPatternRouteResolver> configurePatterns,
-            Func<string, Task<object>> tenantDataFetch = null)
+            Action<MultiPatternRouteResolver> configurePatterns)
         {
             var resolver = new MultiPatternRouteResolver();
             configurePatterns(resolver);
-
-            if (tenantDataFetch != null)
-            {
-                var tenantCache = app.ApplicationServices.GetRequiredService<ITenantCache>();
-                var tenantInfoProvider = new TenantInfoProvider(tenantCache, tenantDataFetch);
-                return app.UseMiddleware<TenantResolutionMiddleware>(resolver, tenantInfoProvider, new List<Func<string, Task<(string, object)>>>());
-            }
-
-            var emptyProvider = new NullTenantInfoProvider();
-            return app.UseMiddleware<TenantResolutionMiddleware>(resolver, emptyProvider, new List<Func<string, Task<(string, object)>>>());
+            return app.UseMiddleware<TenantResolutionMiddleware>(resolver);
         }
 
         /// <summary>
-        /// Use middleware with custom resolver
+        /// Resolve the tenant with a custom <see cref="ITenantResolver"/>.
         /// </summary>
         public static IApplicationBuilder UseTenantContextCacheWithResolver(
             this IApplicationBuilder app,
-            ITenantResolver tenantResolver,
-            Func<string, Task<object>> tenantDataFetch = null)
+            ITenantResolver tenantResolver)
         {
-            if (tenantDataFetch != null)
-            {
-                var tenantCache = app.ApplicationServices.GetRequiredService<ITenantCache>();
-                var tenantInfoProvider = new TenantInfoProvider(tenantCache, tenantDataFetch);
-                return app.UseMiddleware<TenantResolutionMiddleware>(tenantResolver, tenantInfoProvider, new List<Func<string, Task<(string, object)>>>());
-            }
-
-            var emptyProvider = new NullTenantInfoProvider();
-            return app.UseMiddleware<TenantResolutionMiddleware>(tenantResolver, emptyProvider, new List<Func<string, Task<(string, object)>>>());
-        }
-
-        public static IApplicationBuilder UseTenantContextCacheWithResolvers(
-            this IApplicationBuilder app,
-            string tenantPattern,
-            Func<string, Task<object>> tenantDataFetch,
-            params Func<string, Task<(string key, object value)>>[] additionalResolvers)
-        {
-            var tenantResolver = new RegexTenantResolver(tenantPattern);
-            var tenantCache = app.ApplicationServices.GetRequiredService<ITenantCache>();
-            var tenantInfoProvider = new TenantInfoProvider(tenantCache, tenantDataFetch);
-            var resolversList = new List<Func<string, Task<(string, object)>>>(additionalResolvers);
-            return app.UseMiddleware<TenantResolutionMiddleware>(tenantResolver, tenantInfoProvider, resolversList);
-        }
-    }
-
-    /// <summary>
-    /// Null implementation for when no tenant data provider is configured
-    /// </summary>
-    public class NullTenantInfoProvider : ITenantInfoProvider
-    {
-        public Task<T> GetTenantInfoAsync<T>(string tenantId)
-        {
-            return Task.FromResult<T>(default);
+            return app.UseMiddleware<TenantResolutionMiddleware>(tenantResolver);
         }
     }
 
@@ -413,9 +355,9 @@ namespace TenantContextCache
     public class TenantContextCacheBuilder
     {
         private readonly IServiceCollection _services;
-        private CacheConfiguration _config = new();
-        private Func<string, Task<object>> _tenantDataFetch;
+        private readonly CacheConfiguration _config = new();
         private Func<IServiceProvider, IDistributedCache> _customL2Factory;
+        private Action<IServiceCollection> _registerTenantInfoProvider;
 
         public TenantContextCacheBuilder(IServiceCollection services)
         {
@@ -434,9 +376,41 @@ namespace TenantContextCache
             return this;
         }
 
-        public TenantContextCacheBuilder WithTenantDataFetch(Func<string, Task<object>> fetchFunc)
+        /// <summary>
+        /// Configure the (required) tenant-data source. On each request the resolution
+        /// middleware calls this — cache-first — and injects the returned
+        /// <typeparamref name="TTenantInfo"/> into the request context, where it is read back
+        /// via <see cref="ITenantContextAccessor.GetTenantInfo{T}"/>. Supplying tenant data is
+        /// this library's primary function, so it must be configured.
+        /// </summary>
+        public TenantContextCacheBuilder WithTenantDataFetch<TTenantInfo>(Func<string, Task<TTenantInfo>> fetch)
+            where TTenantInfo : class
         {
-            _tenantDataFetch = fetchFunc;
+            if (fetch == null)
+                throw new ArgumentNullException(nameof(fetch));
+
+            return WithTenantDataFetch<TTenantInfo>((_, tenantId) => fetch(tenantId));
+        }
+
+        /// <summary>
+        /// Configure the (required) tenant-data source, with access to the request-scoped
+        /// <see cref="IServiceProvider"/>. Use this overload when the fetch depends on
+        /// DI-registered services (a repository, <c>DbContext</c>, <c>HttpClient</c>, …): the
+        /// provided <see cref="IServiceProvider"/> is the current request scope, so resolving
+        /// scoped services from it is safe.
+        /// </summary>
+        public TenantContextCacheBuilder WithTenantDataFetch<TTenantInfo>(
+            Func<IServiceProvider, string, Task<TTenantInfo>> fetch)
+            where TTenantInfo : class
+        {
+            if (fetch == null)
+                throw new ArgumentNullException(nameof(fetch));
+
+            _registerTenantInfoProvider = services =>
+                services.AddScoped<ITenantInfoProvider>(sp =>
+                    new TenantInfoProvider<TTenantInfo>(
+                        sp.GetRequiredService<ITenantContextCache>(),
+                        tenantId => fetch(sp, tenantId)));
             return this;
         }
 
@@ -461,7 +435,6 @@ namespace TenantContextCache
         public TenantContextCacheBuilder WithCustomL2(Func<IServiceProvider, IDistributedCache> factory)
         {
             _customL2Factory = factory ?? throw new ArgumentNullException(nameof(factory));
-            RegisterCaches();
             return this;
         }
 
@@ -476,8 +449,22 @@ namespace TenantContextCache
             return WithCustomL2(sp => sp.GetRequiredService<TDistributedCache>());
         }
 
-        private void RegisterCaches()
+        /// <summary>
+        /// Validates the configuration and performs DI registration. Called once by
+        /// <see cref="TenantContextCacheExtensions.AddTenantContextCache"/> after the caller's
+        /// configuration has run, so builder calls are order-independent.
+        /// </summary>
+        internal void Build()
         {
+            if (_customL2Factory == null)
+                throw new InvalidOperationException(
+                    "No L2 (distributed) cache configured. Call WithCustomL2(...) with an IDistributedCache backend.");
+
+            if (_registerTenantInfoProvider == null)
+                throw new InvalidOperationException(
+                    "No tenant-data fetch configured. Call WithTenantDataFetch<TTenantInfo>(...): " +
+                    "fetching and injecting tenant data through the cache is this library's primary function.");
+
             _services.AddSingleton(_config);
 
             // FusionCache provides the hybrid L1 (in-memory) + L2 (distributed) engine.
@@ -496,10 +483,7 @@ namespace TenantContextCache
             // The L2 (distributed) layer is provided by the caller as an IDistributedCache.
             // Any backend with an IDistributedCache adapter (Redis, SQL Server, etc.) can be
             // plugged in via WithCustomL2(...).
-            var factory = _customL2Factory
-                ?? throw new InvalidOperationException(
-                    "No custom L2 (distributed) cache was configured. Call WithCustomL2(...).");
-            fusion.WithDistributedCache(factory);
+            fusion.WithDistributedCache(_customL2Factory);
 
             _services.AddSingleton<ITenantContextCache>(sp =>
                 new TenantContextCache(sp.GetRequiredService<IFusionCache>()));
@@ -507,19 +491,8 @@ namespace TenantContextCache
             // Register tenant context accessor
             _services.AddScoped<ITenantContextAccessor, HttpContextTenantAccessor>();
 
-            // Register tenant info provider if data fetch function is provided
-            if (_tenantDataFetch != null)
-            {
-                _services.AddScoped<ITenantInfoProvider>(sp =>
-                {
-                    var tenantCache = sp.GetRequiredService<ITenantCache>();
-                    return new TenantInfoProvider(tenantCache, _tenantDataFetch);
-                });
-            }
-            else
-            {
-                _services.AddScoped<ITenantInfoProvider, NullTenantInfoProvider>();
-            }
+            // Register the (required) tenant info provider
+            _registerTenantInfoProvider(_services);
 
             // Register factory for tenant-specific cache
             _services.AddScoped<ITenantCache>(sp =>

@@ -8,20 +8,26 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services
 builder.Services.AddHttpContextAccessor();
 
-// Configure multi-tier cache with database fetch function.
-// The library ships no Redis dependency: the L2 (distributed) layer is provided here as a
-// custom IDistributedCache. RedisDistributedCache is a small Redis-backed adapter defined in
-// this example project (see RedisDistributedCache.cs).
+// The tenant data source, resolved from DI per request (could depend on a DbContext, etc.).
+builder.Services.AddScoped<ITenantService, TenantService>();
+
+// Configure the multi-tier cache.
+//  - WithTenantDataFetch<TenantInfo> is required: on each request the middleware resolves the
+//    tenant, fetches its TenantInfo (cache-first), and injects it into HttpContext. Read it
+//    back anywhere via ITenantContextAccessor.GetTenantInfo<TenantInfo>(). This overload hands
+//    the fetch the request-scoped IServiceProvider so it can resolve scoped services safely.
+//  - The library ships no Redis dependency: the L2 (distributed) layer is supplied here as a
+//    custom IDistributedCache. RedisDistributedCache is a small Redis-backed adapter defined in
+//    this example project (see RedisDistributedCache.cs).
 builder.Services.AddTenantContextCache(cache =>
 {
     cache
         .WithL1TimeToLive(TimeSpan.FromMinutes(5)) // L1: 5 minutes in-memory
         .WithL2TimeToLive(TimeSpan.FromHours(1)) // L2: 1 hour in the distributed cache
+        .WithTenantDataFetch<TenantInfo>((sp, tenantId) =>
+            sp.GetRequiredService<ITenantService>().GetTenantByIdAsync(tenantId))
         .WithCustomL2(_ => new RedisDistributedCache("localhost:6379")); // Bring your own IDistributedCache
 });
-
-// Register tenant database and service
-builder.Services.AddScoped<ITenantService, TenantService>();
 
 var app = builder.Build();
 
@@ -43,12 +49,14 @@ app.UseTenantContextCache(@"/api/tenants/(?<tenant>[^/]+)");
 app.UseRouting();
 app.UseEndpoints(endpoints =>
 {
-    endpoints.MapGet("/api/tenants/{tenantId}/info", async (
+    endpoints.MapGet("/api/tenants/{tenantId}/info", (
         string tenantId,
-        ITenantService tenantService) =>
+        ITenantContextAccessor tenantContext) =>
     {
-        var tenant = await tenantService.GetTenantByIdAsync(tenantId);
-        return Results.Ok(tenant);
+        // The middleware already resolved the tenant and injected its TenantInfo (cache-first)
+        // into the request context — no extra database or cache call needed here.
+        var tenant = tenantContext.GetTenantInfo<TenantInfo>();
+        return tenant == null ? Results.NotFound() : Results.Ok(tenant);
     });
 
     endpoints.MapGet("/api/tenants/{tenantId}/custom-resource", async (

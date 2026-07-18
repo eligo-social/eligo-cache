@@ -49,29 +49,34 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddHttpContextAccessor();
 
-// Configure cache
+builder.Services.AddScoped<ITenantService, TenantService>();
+
+// Configure cache. Two things are required:
+//   - WithTenantDataFetch<T>: the source of tenant data. On each request the middleware calls
+//     it (cache-first) and injects the result into the request context. This is the library's
+//     primary job, so it must be configured. The (sp, tenantId) overload hands the fetch the
+//     request-scoped IServiceProvider, so it can resolve scoped services (a repository,
+//     DbContext, …) safely; a plain tenantId => … overload exists for dependency-free fetches.
+//   - WithCustomL2: the L2 distributed backend, as any IDistributedCache (Redis, SQL Server, …).
 builder.Services.AddTenantContextCache(cache =>
 {
     cache
         .WithL1TimeToLive(TimeSpan.FromMinutes(5))
         .WithL2TimeToLive(TimeSpan.FromHours(1))
+        .WithTenantDataFetch<TenantInfo>((sp, tenantId) =>
+            sp.GetRequiredService<ITenantService>().GetTenantByIdAsync(tenantId))
         .WithCustomL2(_ => new MyDistributedCache("localhost:6379")); // any IDistributedCache (Redis, etc.)
 });
 
 var app = builder.Build();
 
-// Add middleware with tenant data fetch
-app.UseTenantContextCache(
-    @"/api/tenants/(?<tenant>[^/]+)",
-    async (tenantId) =>
-    {
-        var db = app.Services.GetRequiredService<ITenantService>();
-        return await db.GetTenantByIt(tenantId);
-    }
-);
+// The middleware only needs to know how to resolve the tenant id from the request;
+// the fetch was configured above.
+app.UseTenantContextCache(@"/api/tenants/(?<tenant>[^/]+)");
 
 app.MapGet("/api/tenants/{tenantId}/info", (ITenantContextAccessor ctx) =>
 {
+    // Tenant data was already resolved, fetched (cache-first) and injected by the middleware.
     var tenantInfo = ctx.GetTenantInfo<TenantInfo>();
     return Results.Json(tenantInfo);
 });
@@ -137,34 +142,26 @@ Notes:
   ```
 - Chained constraints such as `{id:int:min(1)}` use the first token (`int`) for matching.
 - Unknown/unsupported constraints (including `regex(...)`) fall back to `[^/]+`.
-- An optional tenant data fetch callback can be passed as the second argument, exactly
-  like `UseTenantContextCache`.
+- The tenant data fetch is configured once via `WithTenantDataFetch<T>` at registration; the
+  `Use...` overloads only pick how the tenant id is resolved.
 
 ### Multiple Tenant Resolution Patterns
 
 Support both `/tenants/123` (numeric) and `/Tenants/acme` (slug):
 
 ```csharp
-app.UseTenantContextCacheWithPatterns(
-    patterns =>
-    {
-        patterns
-            .WithNumericTenantId("tenantId")      // /tenants/{tenantId}/**
-            .WithTenantSlug("tenantSlug")         // /Tenants/{tenantSlug}/**
-            .WithHeader("X-Tenant-Id")            // Fallback to header
-            .WithSubdomain();                      // SaaS multi-tenant
-    },
-    async (tenantId) =>
-    {
-        var db = app.Services.GetRequiredService<ITenantDatabase>();
-        
-        if (int.TryParse(tenantId, out _))
-            return await db.GetTenantByIdAsync(tenantId);
-        
-        return await db.GetTenantBySlugAsync(tenantId);
-    }
-);
+app.UseTenantContextCacheWithPatterns(patterns =>
+{
+    patterns
+        .WithNumericTenantId("tenantId")      // /tenants/{tenantId}/**
+        .WithTenantSlug("tenantSlug")         // /Tenants/{tenantSlug}/**
+        .WithHeader("X-Tenant-Id")            // Fallback to header
+        .WithSubdomain();                      // SaaS multi-tenant
+});
 ```
+
+The tenant data source is the `WithTenantDataFetch<T>` you configured at registration — it can
+branch on the id shape itself, e.g. `int.TryParse(id, …) ? GetByIdAsync(id) : GetBySlugAsync(id)`.
 
 `MultiPatternRouteResolver` tries each registered source **in order** and returns the
 first non-empty tenant id (empty results are treated as "no match" and fall through).
@@ -203,10 +200,7 @@ public class CustomTenantResolver : ITenantResolver
     }
 }
 
-app.UseTenantContextCacheWithResolver(
-    new CustomTenantResolver(),
-    async (tenantId) => await db.GetTenantAsync(tenantId)
-);
+app.UseTenantContextCacheWithResolver(new CustomTenantResolver());
 ```
 
 ### L2 Cache Backend
