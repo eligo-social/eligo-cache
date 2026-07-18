@@ -16,19 +16,6 @@ namespace TenantContextCache
     {
         public TimeSpan L1TimeToLive { get; set; } = TimeSpan.FromMinutes(5);
         public TimeSpan L2TimeToLive { get; set; } = TimeSpan.FromHours(1);
-        public L2Implementation L2Implementation { get; set; } = L2Implementation.Redis;
-        public string RedisConnectionString { get; set; }
-    }
-
-    /// <summary>
-    /// Supported L2 (distributed) cache implementations. FusionCache models the L2 layer as
-    /// an <see cref="IDistributedCache"/>, so any backend with an <c>IDistributedCache</c>
-    /// adapter can be plugged in via <see cref="L2Implementation.Custom"/>.
-    /// </summary>
-    public enum L2Implementation
-    {
-        Redis,
-        Custom
     }
 
     /// <summary>
@@ -62,8 +49,8 @@ namespace TenantContextCache
     /// <para>
     /// FusionCache provides the hybrid L1 (in-memory) + L2 (distributed) behaviour natively:
     /// reads are served from L1 and transparently back-filled from L2, writes fan out to both
-    /// layers, and a Redis backplane keeps L1 coherent across nodes. Every entry is tagged with
-    /// its tenant so an entire tenant can be evicted in one call via <see cref="RemoveAllTenantAsync"/>.
+    /// layers. Every entry is tagged with its tenant so an entire tenant can be evicted in one
+    /// call via <see cref="RemoveAllTenantAsync"/>.
     /// </para>
     /// </summary>
     public class TenantContextCache : ITenantContextCache
@@ -453,14 +440,6 @@ namespace TenantContextCache
             return this;
         }
 
-        public TenantContextCacheBuilder WithRedisL2(string connectionString)
-        {
-            _config.L2Implementation = L2Implementation.Redis;
-            _config.RedisConnectionString = connectionString;
-            RegisterCaches();
-            return this;
-        }
-
         /// <summary>
         /// Use a custom L2 (distributed) cache implementation. The instance must implement
         /// <see cref="IDistributedCache"/> — FusionCache's abstraction for the distributed layer.
@@ -482,7 +461,6 @@ namespace TenantContextCache
         public TenantContextCacheBuilder WithCustomL2(Func<IServiceProvider, IDistributedCache> factory)
         {
             _customL2Factory = factory ?? throw new ArgumentNullException(nameof(factory));
-            _config.L2Implementation = L2Implementation.Custom;
             RegisterCaches();
             return this;
         }
@@ -515,28 +493,13 @@ namespace TenantContextCache
                 })
                 .WithSystemTextJsonSerializer();
 
-            switch (_config.L2Implementation)
-            {
-                case L2Implementation.Redis:
-                    // Redis as both the L2 distributed cache and the cross-node backplane
-                    // (the backplane keeps each node's L1 coherent and propagates tag evictions).
-                    _services.AddStackExchangeRedisCache(o => o.Configuration = _config.RedisConnectionString);
-                    fusion
-                        .WithRegisteredDistributedCache()
-                        .WithStackExchangeRedisBackplane(o => o.Configuration = _config.RedisConnectionString);
-                    break;
-
-                case L2Implementation.Custom:
-                    var factory = _customL2Factory
-                        ?? throw new InvalidOperationException(
-                            "L2Implementation is Custom but no custom L2 factory was configured.");
-                    fusion.WithDistributedCache(factory);
-                    break;
-
-                default:
-                    throw new InvalidOperationException(
-                        $"Unsupported L2 implementation: {_config.L2Implementation}.");
-            }
+            // The L2 (distributed) layer is provided by the caller as an IDistributedCache.
+            // Any backend with an IDistributedCache adapter (Redis, SQL Server, etc.) can be
+            // plugged in via WithCustomL2(...).
+            var factory = _customL2Factory
+                ?? throw new InvalidOperationException(
+                    "No custom L2 (distributed) cache was configured. Call WithCustomL2(...).");
+            fusion.WithDistributedCache(factory);
 
             _services.AddSingleton<ITenantContextCache>(sp =>
                 new TenantContextCache(sp.GetRequiredService<IFusionCache>()));

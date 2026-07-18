@@ -14,19 +14,19 @@
     <Version>1.0.0</Version>
     <Title>TenantContextCache</Title>
     <Authors>eligo-social</Authors>
-    <Description>A production-ready multi-tiered caching library for ASP.NET Core with automatic tenant context injection and multiple URL pattern support, powered by FusionCache (hybrid L1 in-memory + L2 distributed cache with stampede protection, fail-safe, a Redis backplane and tag-based invalidation).</Description>
+    <Description>A production-ready multi-tiered caching library for ASP.NET Core with automatic tenant context injection and multiple URL pattern support, powered by FusionCache (hybrid L1 in-memory + L2 distributed cache with stampede protection, fail-safe and tag-based invalidation). Bring any IDistributedCache backend (Redis, SQL Server, etc.) for the L2 layer.</Description>
     <PackageProjectUrl>https://github.com/eligo-social/eligo-cache</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/eligo-social/eligo-cache</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageTags>cache;caching;multitier;hybrid-cache;fusioncache;distributed-cache;tenant;aspnetcore;middleware;redis</PackageTags>
+    <PackageTags>cache;caching;multitier;hybrid-cache;fusioncache;distributed-cache;tenant;aspnetcore;middleware</PackageTags>
     <PackageReleaseNotes>
 - Hybrid caching powered by FusionCache (L1 in-memory + L2 distributed)
-- Cache stampede protection, fail-safe and Redis backplane out of the box
+- Cache stampede protection and fail-safe out of the box
 - Per-tenant bulk invalidation via FusionCache tagging
 - Automatic tenant context resolution
 - Multiple URL pattern support
-- Redis and custom IDistributedCache backends
+- Bring your own IDistributedCache backend for L2 (Redis, SQL Server, etc.)
     </PackageReleaseNotes>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
@@ -38,8 +38,6 @@
   <ItemGroup>
     <PackageReference Include="ZiggyCreatures.FusionCache" Version="2.6.0" />
     <PackageReference Include="ZiggyCreatures.FusionCache.Serialization.SystemTextJson" Version="2.6.0" />
-    <PackageReference Include="ZiggyCreatures.FusionCache.Backplane.StackExchangeRedis" Version="2.6.0" />
-    <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="8.0.11" />
   </ItemGroup>
 
 </Project>

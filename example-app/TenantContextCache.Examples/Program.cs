@@ -8,14 +8,16 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services
 builder.Services.AddHttpContextAccessor();
 
-// Configure multi-tier cache with database fetch function
+// Configure multi-tier cache with database fetch function.
+// The library ships no Redis dependency: the L2 (distributed) layer is provided here as a
+// custom IDistributedCache. RedisDistributedCache is a small Redis-backed adapter defined in
+// this example project (see RedisDistributedCache.cs).
 builder.Services.AddTenantContextCache(cache =>
 {
     cache
         .WithL1TimeToLive(TimeSpan.FromMinutes(5)) // L1: 5 minutes in-memory
         .WithL2TimeToLive(TimeSpan.FromHours(1)) // L2: 1 hour in the distributed cache
-        .WithRedisL2("localhost:6379"); // Use Redis for L2 (FusionCache distributed cache + backplane)
-    // .WithCustomL2(myDistributedCache);            // Or bring your own IDistributedCache
+        .WithCustomL2(_ => new RedisDistributedCache("localhost:6379")); // Bring your own IDistributedCache
 });
 
 // Register tenant database and service

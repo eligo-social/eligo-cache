@@ -13,9 +13,8 @@ The two-tier caching engine is powered by [**FusionCache**](https://github.com/Z
 
 - **Two-Tier Caching (powered by FusionCache)**
   - L1: Fast in-memory cache (5 sec - 30 min TTL)
-  - L2: Distributed cache via Redis or any custom `IDistributedCache` (1 hour - 1 day TTL)
+  - L2: Distributed cache via any `IDistributedCache` backend you supply — Redis, SQL Server, etc. (1 hour - 1 day TTL)
   - Automatic L1→L2 fallback on miss, cache stampede protection, and fail-safe
-  - Redis backplane keeps every node's L1 coherent
 
 - **Tenant Resolution**
   - Route parameters (numeric IDs, string slugs)
@@ -56,7 +55,7 @@ builder.Services.AddTenantContextCache(cache =>
     cache
         .WithL1TimeToLive(TimeSpan.FromMinutes(5))
         .WithL2TimeToLive(TimeSpan.FromHours(1))
-        .WithRedisL2("localhost:6379");
+        .WithCustomL2(_ => new MyDistributedCache("localhost:6379")); // any IDistributedCache (Redis, etc.)
 });
 
 var app = builder.Build();
@@ -210,12 +209,15 @@ app.UseTenantContextCacheWithResolver(
 );
 ```
 
-### Custom L2 Cache Backend
+### L2 Cache Backend
 
-Besides the built-in Redis backend, you can plug in any L2 distributed cache.
-Because FusionCache uses `IDistributedCache` as its L2 abstraction, the only
-requirement is a standard `IDistributedCache` implementation — many already exist
-(Redis, SQL Server, NCache, etc.) and you can also write your own:
+The L2 (distributed) layer is always supplied by you as an `IDistributedCache`.
+The library itself ships no distributed-cache dependency, so you bring the backend
+that fits your stack. Because FusionCache uses `IDistributedCache` as its L2
+abstraction, the only requirement is a standard `IDistributedCache` implementation —
+many already exist (Redis, SQL Server, NCache, etc.) and you can also write your own.
+The [example app](example-app/TenantContextCache.Examples) includes a small
+Redis-backed `IDistributedCache` (`RedisDistributedCache`) built on StackExchange.Redis:
 
 ```csharp
 public class MyCustomL2Cache : IDistributedCache
@@ -278,8 +280,7 @@ app.MapPost("/api/tenants/{tenantId}/settings", async (
 
 To clear **everything** for a tenant in one call, use `RemoveAllTenantAsync`. Each
 entry is written with a per-tenant tag, so this maps to a single FusionCache
-`RemoveByTagAsync` — it evicts across both L1 and L2, and (with the Redis backplane)
-across all nodes:
+`RemoveByTagAsync` — it evicts across both L1 and L2:
 
 ```csharp
 await cache.RemoveAllTenantAsync(tenantId);
@@ -329,8 +330,7 @@ dotnet test  --collect:"XPlat Code Coverage"
 - [x] Multiple URL patterns
 - [x] Tenant Context Resolution from Authentication Token 
 - [x] FusionCache-backed two-tier engine
-- [x] Redis backend (distributed cache + backplane)
-- [x] Custom L2 backend (any `IDistributedCache`)
+- [x] Bring-your-own L2 backend (any `IDistributedCache`, e.g. Redis)
 - [x] Per-tenant bulk invalidation via FusionCache tagging
 - [ ] OpenTelemetry metrics
 - [ ] Cache preloading strategies

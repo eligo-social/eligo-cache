@@ -102,7 +102,7 @@ builder.Services.AddTenantContextCache(cache =>
     cache
         .WithL1TimeToLive(TimeSpan.FromMinutes(5))
         .WithL2TimeToLive(TimeSpan.FromHours(1))
-        .WithRedisL2("localhost:6379");
+        .WithCustomL2(_ => new MyDistributedCache("localhost:6379")); // any IDistributedCache (Redis, etc.)
 });
 
 var app = builder.Build();
