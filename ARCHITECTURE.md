@@ -4,7 +4,7 @@
 
 The enhanced library provides a **zero-lookup tenant context** pattern where:
 
-1. **Middleware** extracts the tenant ID from the request URL
+1. **Middleware** extracts the tenant ID from the annotated endpoint's route value
 2. **Middleware** fetches tenant data from cache (or database on miss)
 3. **Tenant data is stored in HttpContext** for use throughout the request
 4. **Developers inject `ITenantContextService`** to access tenant data without additional calls
@@ -18,8 +18,9 @@ This eliminates repeated database queries and provides a clean, type-safe API fo
 ```
 HTTP Request
     ↓
-TenantResolutionMiddleware
-    ├─ Extract tenantId from URL via regex
+TenantResolutionMiddleware  (runs after UseRouting)
+    ├─ Skip unless the matched endpoint has [TenantContext]
+    ├─ Extract tenantId from the named route value
     ├─ Call ITenantInfoProvider.GetTenantInfoAsync(tenantId)
     │   ├─ Check L1 cache (in-memory, 5 min TTL)
     │   ├─ Check L2 cache (Redis, 1 hour TTL)
@@ -112,13 +113,18 @@ builder.Services.AddTenantContextCache(cache =>
 
 var app = builder.Build();
 
-// The middleware only picks how the tenant id is resolved; the fetch was configured above.
-app.UseTenantContextCache(@"/api/tenants/(?<tenant>[^/]+)");
+app.UseRouting();
+
+// Resolution is opt-in per endpoint via [TenantContext]; register after UseRouting() so the
+// matched endpoint and its route values are available. The fetch was configured above.
+app.UseTenantContextCache();
 
 app.Run();
 ```
 
 ### Step 4: Use in Endpoints
+
+Annotate each endpoint that needs tenant context with `[TenantContext("<routeParam>")]`.
 
 ```csharp
 // Option A: Inject ITenantContextAccessor directly
@@ -127,7 +133,8 @@ app.MapGet("/api/tenants/{tenantId}/info", (ITenantContextAccessor ctx) =>
     var tenantId = ctx.GetTenantId();
     var tenantInfo = ctx.GetTenantInfo<TenantInfo>();
     return Results.Ok(tenantInfo);
-});
+})
+.WithMetadata(new TenantContextAttribute("tenantId")); // opt in; tenant comes from {tenantId}
 
 // Option B: Create a service wrapper (recommended)
 public class TenantContextService
@@ -161,7 +168,7 @@ app.MapGet("/api/tenants/{tenantId}/dashboard", (TenantContextService tenant) =>
 GET /api/tenants/acme/info
 
 Middleware:
-  1. Extract tenantId = "acme" from URL
+  1. Extract tenantId = "acme" from the {tenantId} route value
   2. Call TenantInfoProvider.GetTenantInfoAsync("acme")
      - L1 cache miss
      - L2 cache miss
@@ -184,7 +191,7 @@ Response time: ~50ms (database call)
 GET /api/tenants/acme/info
 
 Middleware:
-  1. Extract tenantId = "acme" from URL
+  1. Extract tenantId = "acme" from the {tenantId} route value
   2. Call TenantInfoProvider.GetTenantInfoAsync("acme")
      - L1 cache HIT (in-memory)
      - Return cached object immediately
@@ -205,7 +212,7 @@ Speedup: 25-50x faster
 GET /api/tenants/globex/info
 
 Middleware:
-  1. Extract tenantId = "globex" from URL
+  1. Extract tenantId = "globex" from the {tenantId} route value
   2. Call TenantInfoProvider.GetTenantInfoAsync("globex")
      - L1 cache miss (different tenant)
      - L2 cache miss (first time)
@@ -453,17 +460,20 @@ Improvement:
 
 ### Tenant Info is null in endpoint
 
-**Cause**: Middleware didn't extract tenant or failed to fetch from database
+**Cause**: The endpoint didn't opt in, the middleware ran before routing, or the fetch failed.
 
 **Solution**:
 ```csharp
-// Check regex pattern matches your URL
-app.UseTenantContextCache(@"/api/tenants/(?<tenant>[^/]+)");
+// 1. The endpoint must be annotated, and the name must match the route parameter.
+app.MapGet("/api/tenants/{tenantId}/users", handler)
+   .WithMetadata(new TenantContextAttribute("tenantId")); // "tenantId" == {tenantId}
 
-// Test with exact URL:
-// GET /api/tenants/acme/users → Should extract "acme"
+// 2. The middleware must be registered AFTER UseRouting() (and before endpoints);
+//    otherwise no endpoint is matched yet and nothing resolves.
+app.UseRouting();
+app.UseTenantContextCache();
 
-// Enable logging to see middleware behavior
+// 3. Enable logging to see middleware behavior
 builder.Services.AddLogging(c => c.AddConsole());
 ```
 
@@ -497,7 +507,7 @@ public class CacheWarmingService : BackgroundService
 **Solution**:
 - Library automatically scopes keys as `tenant:{tenantId}:{key}`
 - Verify each request has correct tenant ID in context
-- Check tenant ID extraction regex is correct
+- Check the `[TenantContext("...")]` route-parameter name matches the endpoint's route
 
 ---
 

@@ -17,6 +17,7 @@ The two-tier caching engine is powered by [**FusionCache**](https://github.com/Z
   - Automatic L1→L2 fallback on miss, cache stampede protection, and fail-safe
 
 - **Tenant Resolution**
+  - Opt-in per endpoint via a `[TenantContext]` annotation (recommended — no URL-shape guessing)
   - Route parameters (numeric IDs, string slugs)
   - HTTP headers
   - Subdomains
@@ -70,40 +71,95 @@ builder.Services.AddTenantContextCache(cache =>
 
 var app = builder.Build();
 
-// The middleware only needs to know how to resolve the tenant id from the request;
-// the fetch was configured above.
-app.UseTenantContextCache(@"/api/tenants/(?<tenant>[^/]+)");
+app.UseRouting();
+
+// Tenant resolution is opt-in per endpoint: only endpoints annotated with
+// [TenantContext("<routeParam>")] participate, and the tenant is read from that route value.
+// Register it AFTER UseRouting() so the matched endpoint and its route values are available.
+// The tenant data fetch was configured above.
+app.UseTenantContextCache();
 
 app.MapGet("/api/tenants/{tenantId}/info", (ITenantContextAccessor ctx) =>
 {
     // Tenant data was already resolved, fetched (cache-first) and injected by the middleware.
     var tenantInfo = ctx.GetTenantInfo<TenantInfo>();
     return Results.Json(tenantInfo);
-});
+})
+.WithMetadata(new TenantContextAttribute("tenantId")); // opt in; tenant comes from {tenantId}
 
 app.Run();
 ```
 
 ### 3. Use in Endpoints
 
+Annotate every endpoint that needs tenant context with `[TenantContext("<routeParam>")]`,
+naming the route parameter that holds the tenant. Endpoints without the annotation are left
+untouched — this is what makes resolution opt-in and prevents an unrelated path (e.g.
+`/admin/tenants/list`) from ever being mistaken for a tenant route.
+
 ```csharp
-app.MapGet("/api/tenants/{tenantId}/users", (ITenantContextService context) =>
+app.MapGet("/api/tenants/{tenantId}/users", (ITenantContextAccessor context) =>
 {
     // Tenant data pre-loaded and available (no DB call!)
+    var tenant = context.GetTenantInfo<TenantInfo>();
     return Results.Json(new
     {
-        tenantId = context.TenantId,
-        tenantName = context.TenantInfo.Name,
-        region = context.TenantInfo.Region
+        tenantId = context.GetTenantId(),
+        tenantName = tenant.Name,
+        region = tenant.Region
     });
-});
+})
+.WithMetadata(new TenantContextAttribute("tenantId"));
+```
+
+On MVC/API controllers, apply the attribute to the action or the controller instead:
+
+```csharp
+[ApiController]
+[Route("api/tenants/{tenantId}")]
+[TenantContext("tenantId")]   // applies to every action in the controller
+public class TenantController : ControllerBase { /* ... */ }
 ```
 
 ## 🔧 Advanced Usage
 
+### Annotation-based Resolution (recommended)
+
+The no-argument `app.UseTenantContextCache()` resolves the tenant **only for endpoints that
+opt in** with `[TenantContext("<routeParam>")]`, reading the value straight from the named route
+parameter. There is no URL-shape guessing, so an unrelated path can never be mistaken for a
+tenant route.
+
+```csharp
+app.UseRouting();
+app.UseTenantContextCache();   // must be AFTER UseRouting()
+app.UseEndpoints(/* ... */);
+
+app.MapGet("/api/tenants/{tenantId}/info", /* ... */)
+   .WithMetadata(new TenantContextAttribute("tenantId"));
+```
+
+Two rules to keep in mind:
+
+- **Order matters.** Register the middleware *after* `UseRouting()` (and before your endpoints).
+  Before routing, the matched endpoint and its route values don't exist yet, so nothing resolves.
+- **Opt-in only.** Endpoints without `[TenantContext]` never acquire tenant context, and the
+  middleware runs its resolution only for requests that match an annotated endpoint (404s and
+  static files are skipped).
+
+The attribute's argument is the route-parameter name; it defaults to `"tenant"` when omitted
+(`[TenantContext]` ≙ `[TenantContext("tenant")]`). On controllers, place it on the action or the
+controller class to cover every action.
+
+### URL-shape Matching (alternative)
+
+> ⚠️ These overloads match by **URL shape** and can false-match any path containing the pattern
+> (e.g. `/admin/tenants/list` would resolve `list` as a tenant). Prefer the annotation-based
+> default above unless you specifically need path-shape matching.
+
 ### Route Template Syntax
 
-The default `UseTenantContextCache(...)` takes a **regular expression** with a named
+`UseTenantContextCache(string)` takes a **regular expression** with a named
 `tenant` capture group:
 
 ```csharp

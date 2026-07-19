@@ -31,22 +31,14 @@ builder.Services.AddTenantContextCache(cache =>
 
 var app = builder.Build();
 
-// Use tenant resolution middleware with regex pattern
-// Pattern to extract tenant from URL like /api/tenants/{tenantId}/resources
-// Example: /api/tenants/acme/users -> tenantId = "acme"
-app.UseTenantContextCache(@"/api/tenants/(?<tenant>[^/]+)");
-
-// Alternative: resolve the tenant from several sources with fallback.
-// The first matching source wins (path -> header -> subdomain).
-// app.UseTenantContextCacheWithPatterns(patterns =>
-// {
-//     patterns
-//         .WithRegexPattern(@"/api/tenants/(?<tenant>[^/]+)") // /api/tenants/acme/...
-//         .WithHeader("X-Tenant-Id")                          // fallback to header
-//         .WithSubdomain();                                   // fallback to acme.example.com
-// });
-
 app.UseRouting();
+
+// Tenant resolution is opt-in per endpoint: only endpoints annotated with
+// [TenantContext("<routeParam>")] participate, and the tenant is read from that route value.
+// This must sit AFTER UseRouting() so the matched endpoint and its route values are available,
+// and it removes any risk of an unrelated path being mistaken for a tenant route.
+app.UseTenantContextCache();
+
 app.UseEndpoints(endpoints =>
 {
     endpoints.MapGet("/api/tenants/{tenantId}/info", (
@@ -57,7 +49,8 @@ app.UseEndpoints(endpoints =>
         // into the request context — no extra database or cache call needed here.
         var tenant = tenantContext.GetTenantInfo<TenantInfo>();
         return tenant == null ? Results.NotFound() : Results.Ok(tenant);
-    });
+    })
+    .WithMetadata(new TenantContextAttribute("tenantId")); // opt in; tenant comes from {tenantId}
 
     endpoints.MapGet("/api/tenants/{tenantId}/custom-resource", async (
         string tenantId,
@@ -73,7 +66,8 @@ app.UseEndpoints(endpoints =>
         }
 
         return Results.Ok(new { data = cached, tenant = tenantId });
-    });
+    })
+    .WithMetadata(new TenantContextAttribute("tenantId"));
 
     endpoints.MapPost("/api/tenants/{tenantId}/invalidate-cache", async (
         string tenantId,
@@ -82,7 +76,8 @@ app.UseEndpoints(endpoints =>
         // Clear all cache for this tenant
         await cache.RemoveAllTenantAsync(tenantId);
         return Results.Ok(new { message = $"Cache cleared for tenant {tenantId}" });
-    });
+    })
+    .WithMetadata(new TenantContextAttribute("tenantId"));
 });
 
 app.Run();

@@ -293,7 +293,27 @@ namespace TenantContextCache
         }
 
         /// <summary>
+        /// Resolve the tenant for endpoints annotated with <see cref="TenantContextAttribute"/>,
+        /// reading it from the route parameter that attribute names. This is the recommended,
+        /// risk-free default: only opted-in endpoints participate, so an unrelated path such as
+        /// <c>/admin/tenants/list</c> is never mistaken for a tenant route.
+        /// <para>
+        /// Register it <b>after</b> <c>UseRouting()</c> and before <c>UseEndpoints(...)</c> — the
+        /// resolver reads endpoint metadata and route values, which routing populates.
+        /// </para>
+        /// </summary>
+        public static IApplicationBuilder UseTenantContextCache(this IApplicationBuilder app)
+        {
+            return app.UseMiddleware<TenantResolutionMiddleware>(new EndpointTenantResolver());
+        }
+
+        /// <summary>
         /// Resolve the tenant from a single regex pattern with a named "tenant" capture group.
+        /// <para>
+        /// Note: this matches by URL shape and can false-match any path containing the pattern.
+        /// Prefer the annotation-based <see cref="UseTenantContextCache(IApplicationBuilder)"/>
+        /// unless you specifically need path-shape matching.
+        /// </para>
         /// The tenant data source is configured once via
         /// <see cref="TenantContextCacheBuilder.WithTenantDataFetch{TTenantInfo}"/>.
         /// </summary>

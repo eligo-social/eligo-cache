@@ -1,7 +1,29 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.Http;
 
 namespace TenantContextCache;
+
+    /// <summary>
+    /// Opt-in marker: only endpoints annotated with this attribute participate in tenant
+    /// resolution. The middleware reads the tenant from the route value named by
+    /// <see cref="RouteParameter"/>, so there is no URL-shape guessing and no risk of an
+    /// unrelated path (e.g. <c>/admin/tenants/list</c>) being mistaken for a tenant route.
+    /// Apply it to a controller, an action, or a minimal-API endpoint's metadata.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = false, Inherited = true)]
+    public sealed class TenantContextAttribute : Attribute
+    {
+        /// <summary>Route parameter that carries the tenant, e.g. "tenantId" for "/api/tenants/{tenantId}".</summary>
+        public string RouteParameter { get; }
+
+        public TenantContextAttribute(string routeParameter = "tenant")
+        {
+            if (string.IsNullOrWhiteSpace(routeParameter))
+                throw new ArgumentException("Route parameter name must not be null or empty.", nameof(routeParameter));
+            RouteParameter = routeParameter;
+        }
+    }
 
     /// <summary>
     /// Converts ASP.NET-style route templates such as "/api/tenants/{tenantId:int}"
@@ -166,6 +188,31 @@ namespace TenantContextCache;
             var path = httpContext.Request.Path.Value ?? string.Empty;
             var match = _tenantRegex.Match(path);
             return match.Success ? match.Groups["tenant"].Value : null;
+        }
+    }
+
+    /// <summary>
+    /// Annotation-gated tenant resolver. Resolves a tenant only when the matched endpoint is
+    /// annotated with <see cref="TenantContextAttribute"/>, and takes the value from the route
+    /// parameter that attribute names. Endpoints that don't opt in resolve to <c>null</c>, so
+    /// unrelated paths never acquire tenant context.
+    /// <para>
+    /// Requires the resolution middleware to run after <c>UseRouting()</c> (so an endpoint and
+    /// its route values are available); before routing, <c>GetEndpoint()</c>
+    /// is null and this resolver returns <c>null</c>.
+    /// </para>
+    /// </summary>
+    public class EndpointTenantResolver : ITenantResolver
+    {
+        public string ResolveTenant(HttpContext httpContext)
+        {
+            var marker = httpContext.GetEndpoint()?.Metadata.GetMetadata<TenantContextAttribute>();
+            if (marker == null)
+                return null;
+
+            return httpContext.Request.RouteValues.TryGetValue(marker.RouteParameter, out var value)
+                ? value?.ToString()
+                : null;
         }
     }
 
