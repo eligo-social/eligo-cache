@@ -16,6 +16,9 @@ public class InProcessDistributedCache : IDistributedCache
     public int SetCount { get; private set; }
     public int GetCount { get; private set; }
 
+    /// <summary>Keys currently held in the store, for asserting the L2 key layout.</summary>
+    public IReadOnlyCollection<string> Keys => _store.Keys.ToArray();
+
     public byte[] Get(string key)
     {
         GetCount++;

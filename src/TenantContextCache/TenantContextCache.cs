@@ -16,6 +16,13 @@ namespace TenantContextCache
     {
         public TimeSpan L1TimeToLive { get; set; } = TimeSpan.FromMinutes(5);
         public TimeSpan L2TimeToLive { get; set; } = TimeSpan.FromHours(1);
+
+        /// <summary>
+        /// Leading segment of every cache key and per-tenant tag, e.g. the "tenant" in
+        /// <c>tenant:acme:tenant-info:TenantInfo</c>. Configurable via
+        /// <see cref="TenantContextCacheBuilder.WithCacheKeyPrefix"/>; defaults to "tenant".
+        /// </summary>
+        public string CacheKeyPrefix { get; set; } = TenantContextCache.DefaultCacheKeyPrefix;
     }
 
     /// <summary>
@@ -55,17 +62,22 @@ namespace TenantContextCache
     /// </summary>
     public class TenantContextCache : ITenantContextCache
     {
-        private readonly IFusionCache _cache;
+        /// <summary>Prefix used when none is configured, preserving the original key layout.</summary>
+        public const string DefaultCacheKeyPrefix = "tenant";
 
-        public TenantContextCache(IFusionCache cache)
+        private readonly IFusionCache _cache;
+        private readonly string _keyPrefix;
+
+        public TenantContextCache(IFusionCache cache, string cacheKeyPrefix = DefaultCacheKeyPrefix)
         {
             _cache = cache ?? throw new ArgumentNullException(nameof(cache));
+            _keyPrefix = string.IsNullOrWhiteSpace(cacheKeyPrefix) ? DefaultCacheKeyPrefix : cacheKeyPrefix;
         }
 
-        private static string BuildKey(string tenantId, string key) => $"tenant:{tenantId}:{key}";
+        private string BuildKey(string tenantId, string key) => $"{_keyPrefix}:{tenantId}:{key}";
 
         // Tag applied to every entry belonging to a tenant, enabling one-shot bulk eviction.
-        private static string TenantTag(string tenantId) => $"tenant:{tenantId}";
+        private string TenantTag(string tenantId) => $"{_keyPrefix}:{tenantId}";
 
         public async Task<T> GetAsync<T>(string tenantId, string key)
         {
@@ -397,6 +409,21 @@ namespace TenantContextCache
         }
 
         /// <summary>
+        /// Override the leading segment of every cache key and per-tenant tag (default "tenant").
+        /// For example, a prefix of "myapp" produces keys like <c>myapp:acme:tenant-info:TenantInfo</c>
+        /// and tags like <c>myapp:acme</c>. Useful to namespace entries when several apps share one
+        /// Redis instance. When omitted, the current default ("tenant") is kept.
+        /// </summary>
+        public TenantContextCacheBuilder WithCacheKeyPrefix(string prefix)
+        {
+            if (string.IsNullOrWhiteSpace(prefix))
+                throw new ArgumentException("Cache key prefix must not be null or empty.", nameof(prefix));
+
+            _config.CacheKeyPrefix = prefix;
+            return this;
+        }
+
+        /// <summary>
         /// Configure the (required) tenant-data source. On each request the resolution
         /// middleware calls this — cache-first — and injects the returned
         /// <typeparamref name="TTenantInfo"/> into the request context, where it is read back
@@ -506,7 +533,7 @@ namespace TenantContextCache
             fusion.WithDistributedCache(_customL2Factory);
 
             _services.AddSingleton<ITenantContextCache>(sp =>
-                new TenantContextCache(sp.GetRequiredService<IFusionCache>()));
+                new TenantContextCache(sp.GetRequiredService<IFusionCache>(), _config.CacheKeyPrefix));
 
             // Register tenant context accessor
             _services.AddScoped<ITenantContextAccessor, HttpContextTenantAccessor>();

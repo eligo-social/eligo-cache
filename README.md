@@ -308,6 +308,24 @@ replaced, and the automatic L1→L2 fallback and per-tenant invalidation continu
 to work unchanged. FusionCache handles serialization and key management for the
 distributed layer.
 
+### Cache Key Prefix
+
+Every cache key and per-tenant tag starts with a prefix — `tenant` by default, e.g.
+`tenant:acme:tenant-info:TenantInfo` and the tag `tenant:acme`. Override it with
+`WithCacheKeyPrefix` to namespace entries when several apps share one Redis instance:
+
+```csharp
+builder.Services.AddTenantContextCache(cache =>
+{
+    cache
+        .WithCacheKeyPrefix("myapp")   // -> myapp:acme:tenant-info:TenantInfo, tag myapp:acme
+        .WithTenantDataFetch<TenantInfo>(/* ... */)
+        .WithCustomL2(/* ... */);
+});
+```
+
+When omitted, the current default (`tenant`) is kept, so existing keys are unchanged.
+
 ### Cache Invalidation
 
 ```csharp
