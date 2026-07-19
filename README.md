@@ -326,6 +326,37 @@ builder.Services.AddTenantContextCache(cache =>
 
 When omitted, the current default (`tenant`) is kept, so existing keys are unchanged.
 
+### FusionCache Instance & Naming
+
+The library registers its FusionCache under a **name** (default `tenant-context`) rather than as
+the default instance. This deliberately leaves the unnamed `IFusionCache` free, so the rest of your
+app can register its own default cache without any collision:
+
+```csharp
+builder.Services.AddFusionCache();            // your app's default IFusionCache — untouched
+builder.Services.AddTenantContextCache(/* … */); // registers the named "tenant-context" instance
+```
+
+- **Inject your own cache** as usual: `IFusionCache` resolves to *your* default registration.
+- **Reach the library's instance** through the provider when you need it directly:
+
+  ```csharp
+  public MyService(IFusionCacheProvider provider)
+  {
+      var tenantCache = provider.GetCache(TenantContextCache.DefaultCacheName); // "tenant-context"
+  }
+  ```
+
+- **Rename it** with `WithCacheName` if `tenant-context` clashes with your own naming:
+
+  ```csharp
+  cache.WithCacheName("orders-tenant-cache");
+  ```
+
+> ⚠️ Because the library no longer registers the default `IFusionCache`, injecting `IFusionCache`
+> gives you *your* default cache, not the tenant one. If you don't register a default yourself,
+> `IFusionCache` won't resolve — use `IFusionCacheProvider.GetCache(...)` for the library's instance.
+
 ### Cache Invalidation
 
 ```csharp

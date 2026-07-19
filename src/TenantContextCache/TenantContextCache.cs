@@ -23,6 +23,15 @@ namespace TenantContextCache
         /// <see cref="TenantContextCacheBuilder.WithCacheKeyPrefix"/>; defaults to "tenant".
         /// </summary>
         public string CacheKeyPrefix { get; set; } = TenantContextCache.DefaultCacheKeyPrefix;
+
+        /// <summary>
+        /// Name of the FusionCache instance the library registers for its own use. Using a named
+        /// instance (rather than the default) leaves the unnamed <c>IFusionCache</c> free for the
+        /// rest of your app. Configurable via <see cref="TenantContextCacheBuilder.WithCacheName"/>;
+        /// defaults to <see cref="TenantContextCache.DefaultCacheName"/>. Retrieve it with
+        /// <c>IFusionCacheProvider.GetCache(name)</c>.
+        /// </summary>
+        public string CacheName { get; set; } = TenantContextCache.DefaultCacheName;
     }
 
     /// <summary>
@@ -64,6 +73,9 @@ namespace TenantContextCache
     {
         /// <summary>Prefix used when none is configured, preserving the original key layout.</summary>
         public const string DefaultCacheKeyPrefix = "tenant";
+
+        /// <summary>Name of the FusionCache instance the library registers when none is configured.</summary>
+        public const string DefaultCacheName = "tenant-context";
 
         private readonly IFusionCache _cache;
         private readonly string _keyPrefix;
@@ -424,6 +436,21 @@ namespace TenantContextCache
         }
 
         /// <summary>
+        /// Override the name of the FusionCache instance the library registers (default
+        /// "tenant-context"). The library uses a named instance so the default, unnamed
+        /// <c>IFusionCache</c> stays available for your own <c>AddFusionCache()</c> registration.
+        /// Retrieve the library's instance via <c>IFusionCacheProvider.GetCache(name)</c>.
+        /// </summary>
+        public TenantContextCacheBuilder WithCacheName(string cacheName)
+        {
+            if (string.IsNullOrWhiteSpace(cacheName))
+                throw new ArgumentException("Cache name must not be null or empty.", nameof(cacheName));
+
+            _config.CacheName = cacheName;
+            return this;
+        }
+
+        /// <summary>
         /// Configure the (required) tenant-data source. On each request the resolution
         /// middleware calls this — cache-first — and injects the returned
         /// <typeparamref name="TTenantInfo"/> into the request context, where it is read back
@@ -517,7 +544,9 @@ namespace TenantContextCache
             // FusionCache provides the hybrid L1 (in-memory) + L2 (distributed) engine.
             // L1 uses the shorter Duration; L2 keeps entries for the longer
             // DistributedCacheDuration, matching the previous two-tier TTL semantics.
-            var fusion = _services.AddFusionCache()
+            // The instance is registered under a name (default "tenant-context") so the default,
+            // unnamed IFusionCache stays free for the host app's own AddFusionCache().
+            var fusion = _services.AddFusionCache(_config.CacheName)
                 .WithDefaultEntryOptions(options =>
                 {
                     options.Duration = _config.L1TimeToLive;
@@ -532,8 +561,13 @@ namespace TenantContextCache
             // plugged in via WithCustomL2(...).
             fusion.WithDistributedCache(_customL2Factory);
 
+            // Resolve the library's named FusionCache through the provider (not the default
+            // IFusionCache), so it never collides with a default cache the host app registers.
             _services.AddSingleton<ITenantContextCache>(sp =>
-                new TenantContextCache(sp.GetRequiredService<IFusionCache>(), _config.CacheKeyPrefix));
+            {
+                var fusionCache = sp.GetRequiredService<IFusionCacheProvider>().GetCache(_config.CacheName);
+                return new TenantContextCache(fusionCache, _config.CacheKeyPrefix);
+            });
 
             // Register tenant context accessor
             _services.AddScoped<ITenantContextAccessor, HttpContextTenantAccessor>();
