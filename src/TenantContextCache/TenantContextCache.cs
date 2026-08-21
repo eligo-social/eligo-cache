@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using ZiggyCreatures.Caching.Fusion;
 
 namespace TenantContextCache
@@ -10,6 +11,12 @@ namespace TenantContextCache
     /// in-memory (L1) <c>Duration</c> and <see cref="L2TimeToLive"/> becomes the distributed
     /// (L2) <c>DistributedCacheDuration</c>. A shorter L1 duration means the local copy is
     /// refreshed from L2 more often, exactly as with the previous hand-rolled two-tier cache.
+    /// </para>
+    /// <para>
+    /// Every setting here describes the <b>built-in</b> FusionCache engine. When you bring your
+    /// own cache via <see cref="TenantContextCacheBuilder.WithExistingCache(ITenantContextCache)"/>
+    /// the library builds no engine, so none of these values are honoured — TTLs, key layout and
+    /// instance naming all belong to your implementation.
     /// </para>
     /// </summary>
     public class CacheConfiguration
@@ -401,7 +408,13 @@ namespace TenantContextCache
         private readonly IServiceCollection _services;
         private readonly CacheConfiguration _config = new();
         private Func<IServiceProvider, IDistributedCache> _customL2Factory;
+        private Func<IServiceProvider, ITenantContextCache> _existingCacheFactory;
         private Action<IServiceCollection> _registerTenantInfoProvider;
+
+        // Which engine-specific setters the caller actually invoked. Tracked so Build() can
+        // reject combinations that would be silently ignored when a custom cache replaces the
+        // built-in engine, regardless of the order the builder calls were made in.
+        private readonly List<string> _engineSettersUsed = new();
 
         public TenantContextCacheBuilder(IServiceCollection services)
         {
@@ -411,12 +424,14 @@ namespace TenantContextCache
         public TenantContextCacheBuilder WithL1TimeToLive(TimeSpan ttl)
         {
             _config.L1TimeToLive = ttl;
+            _engineSettersUsed.Add(nameof(WithL1TimeToLive));
             return this;
         }
 
         public TenantContextCacheBuilder WithL2TimeToLive(TimeSpan ttl)
         {
             _config.L2TimeToLive = ttl;
+            _engineSettersUsed.Add(nameof(WithL2TimeToLive));
             return this;
         }
 
@@ -432,6 +447,7 @@ namespace TenantContextCache
                 throw new ArgumentException("Cache key prefix must not be null or empty.", nameof(prefix));
 
             _config.CacheKeyPrefix = prefix;
+            _engineSettersUsed.Add(nameof(WithCacheKeyPrefix));
             return this;
         }
 
@@ -447,6 +463,7 @@ namespace TenantContextCache
                 throw new ArgumentException("Cache name must not be null or empty.", nameof(cacheName));
 
             _config.CacheName = cacheName;
+            _engineSettersUsed.Add(nameof(WithCacheName));
             return this;
         }
 
@@ -524,22 +541,129 @@ namespace TenantContextCache
         }
 
         /// <summary>
+        /// Bring your own cache: use an existing <see cref="ITenantContextCache"/> implementation
+        /// instead of the built-in FusionCache engine.
+        /// <para>
+        /// This replaces the <b>whole</b> caching engine, not just the L2 layer (for that, see
+        /// <see cref="WithCustomL2(IDistributedCache)"/>). The library registers no FusionCache at
+        /// all and simply routes every tenant read/write through your implementation, so cache
+        /// tiers, key layout, TTLs, serialization and per-tenant bulk eviction
+        /// (<see cref="ITenantContextCache.RemoveAllTenantAsync"/>) all become yours to honour.
+        /// Everything else the library provides — tenant resolution, the middleware, the
+        /// cache-first <see cref="ITenantInfoProvider"/> and the per-request
+        /// <see cref="ITenantCache"/> — keeps working unchanged.
+        /// </para>
+        /// <para>
+        /// Because the engine is yours, the engine-specific builder options
+        /// (<see cref="WithCustomL2(IDistributedCache)"/>, <see cref="WithL1TimeToLive"/>,
+        /// <see cref="WithL2TimeToLive"/>, <see cref="WithCacheKeyPrefix"/> and
+        /// <see cref="WithCacheName"/>) no longer apply; combining them with this call is rejected
+        /// at startup rather than silently ignored.
+        /// </para>
+        /// </summary>
+        public TenantContextCacheBuilder WithExistingCache(ITenantContextCache cache)
+        {
+            if (cache == null)
+                throw new ArgumentNullException(nameof(cache));
+
+            return WithExistingCache(_ => cache);
+        }
+
+        /// <summary>
+        /// Bring your own cache, resolved from a factory. The factory receives the application
+        /// (root) <see cref="IServiceProvider"/> and is invoked once, so it should depend only on
+        /// singleton services. See <see cref="WithExistingCache(ITenantContextCache)"/> for what
+        /// supplying your own cache implies.
+        /// </summary>
+        public TenantContextCacheBuilder WithExistingCache(Func<IServiceProvider, ITenantContextCache> factory)
+        {
+            _existingCacheFactory = factory ?? throw new ArgumentNullException(nameof(factory));
+            return this;
+        }
+
+        /// <summary>
+        /// Bring your own cache, resolved from DI by its type. The type is registered as a
+        /// singleton only if you have not registered it yourself, so an existing registration
+        /// (with its own lifetime and dependencies) always wins. See
+        /// <see cref="WithExistingCache(ITenantContextCache)"/> for what supplying your own cache
+        /// implies.
+        /// </summary>
+        public TenantContextCacheBuilder WithExistingCache<TCache>()
+            where TCache : class, ITenantContextCache
+        {
+            _services.TryAddSingleton<TCache>();
+            return WithExistingCache(sp => sp.GetRequiredService<TCache>());
+        }
+
+        /// <summary>
         /// Validates the configuration and performs DI registration. Called once by
         /// <see cref="TenantContextCacheExtensions.AddTenantContextCache"/> after the caller's
         /// configuration has run, so builder calls are order-independent.
         /// </summary>
         internal void Build()
         {
-            if (_customL2Factory == null)
-                throw new InvalidOperationException(
-                    "No L2 (distributed) cache configured. Call WithCustomL2(...) with an IDistributedCache backend.");
-
             if (_registerTenantInfoProvider == null)
                 throw new InvalidOperationException(
                     "No tenant-data fetch configured. Call WithTenantDataFetch<TTenantInfo>(...): " +
                     "fetching and injecting tenant data through the cache is this library's primary function.");
 
             _services.AddSingleton(_config);
+
+            // Exactly one caching engine backs ITenantContextCache: either the caller's own
+            // implementation (bring your own cache) or the built-in FusionCache one.
+            if (_existingCacheFactory != null)
+                RegisterExistingCache();
+            else
+                RegisterFusionCache();
+
+            // Register tenant context accessor
+            _services.AddScoped<ITenantContextAccessor, HttpContextTenantAccessor>();
+
+            // Register the (required) tenant info provider
+            _registerTenantInfoProvider(_services);
+
+            // Register factory for tenant-specific cache
+            _services.AddScoped<ITenantCache>(sp =>
+            {
+                var httpContextAccessor = sp.GetRequiredService<IHttpContextAccessor>();
+                var context = httpContextAccessor.HttpContext;
+                var tenantId = context?.Items["TenantId"] as string ?? "default";
+                var multiTierCache = sp.GetRequiredService<ITenantContextCache>();
+                return new TenantCache(multiTierCache, tenantId);
+            });
+        }
+
+        /// <summary>
+        /// Bring-your-own-cache path: register the caller's <see cref="ITenantContextCache"/> and
+        /// build no engine of our own. Options that only describe the built-in engine are rejected
+        /// here instead of being silently dropped.
+        /// </summary>
+        private void RegisterExistingCache()
+        {
+            var ignored = new List<string>(_engineSettersUsed);
+            if (_customL2Factory != null)
+                ignored.Insert(0, nameof(WithCustomL2));
+
+            if (ignored.Count > 0)
+                throw new InvalidOperationException(
+                    $"WithExistingCache(...) supplies the complete caching engine, so {string.Join(", ", ignored)} " +
+                    "would have no effect: tiers, TTLs, key layout and instance naming are decided by your " +
+                    "ITenantContextCache implementation. Remove those calls, or drop WithExistingCache(...) to use " +
+                    "the built-in FusionCache engine.");
+
+            _services.AddSingleton(_existingCacheFactory);
+        }
+
+        /// <summary>
+        /// Built-in engine path: a named FusionCache over the caller-supplied L2, wrapped in the
+        /// tenant-aware <see cref="TenantContextCache"/>.
+        /// </summary>
+        private void RegisterFusionCache()
+        {
+            if (_customL2Factory == null)
+                throw new InvalidOperationException(
+                    "No L2 (distributed) cache configured. Call WithCustomL2(...) with an IDistributedCache backend, " +
+                    "or WithExistingCache(...) to supply your own ITenantContextCache implementation instead.");
 
             // FusionCache provides the hybrid L1 (in-memory) + L2 (distributed) engine.
             // L1 uses the shorter Duration; L2 keeps entries for the longer
@@ -567,22 +691,6 @@ namespace TenantContextCache
             {
                 var fusionCache = sp.GetRequiredService<IFusionCacheProvider>().GetCache(_config.CacheName);
                 return new TenantContextCache(fusionCache, _config.CacheKeyPrefix);
-            });
-
-            // Register tenant context accessor
-            _services.AddScoped<ITenantContextAccessor, HttpContextTenantAccessor>();
-
-            // Register the (required) tenant info provider
-            _registerTenantInfoProvider(_services);
-
-            // Register factory for tenant-specific cache
-            _services.AddScoped<ITenantCache>(sp =>
-            {
-                var httpContextAccessor = sp.GetRequiredService<IHttpContextAccessor>();
-                var context = httpContextAccessor.HttpContext;
-                var tenantId = context?.Items["TenantId"] as string ?? "default";
-                var multiTierCache = sp.GetRequiredService<ITenantContextCache>();
-                return new TenantCache(multiTierCache, tenantId);
             });
         }
     }

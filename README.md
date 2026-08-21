@@ -15,6 +15,7 @@ The two-tier caching engine is powered by [**FusionCache**](https://github.com/Z
   - L1: Fast in-memory cache (5 sec - 30 min TTL)
   - L2: Distributed cache via any `IDistributedCache` backend you supply — Redis, SQL Server, etc. (1 hour - 1 day TTL)
   - Automatic L1→L2 fallback on miss, cache stampede protection, and fail-safe
+  - Or **bring your own cache**: swap the whole engine for an existing `ITenantContextCache`
 
 - **Tenant Resolution**
   - Opt-in per endpoint via a `[TenantContext]` annotation (recommended — no URL-shape guessing)
@@ -308,6 +309,72 @@ replaced, and the automatic L1→L2 fallback and per-tenant invalidation continu
 to work unchanged. FusionCache handles serialization and key management for the
 distributed layer.
 
+### Bring Your Own Cache
+
+`WithCustomL2` replaces the *L2 layer* while the library still builds and drives a FusionCache
+around it. When you already have a caching component of your own — or you are not on FusionCache
+at all — `WithExistingCache` replaces the **whole engine** instead: implement
+`ITenantContextCache` and the library registers no FusionCache, routing every tenant read and
+write straight through your implementation.
+
+```csharp
+public class MyCache : ITenantContextCache
+{
+    public Task<T> GetAsync<T>(string tenantId, string key) { /* ... */ }
+    public Task SetAsync<T>(string tenantId, string key, T value) { /* ... */ }
+    public Task RemoveAsync(string tenantId, string key) { /* ... */ }
+    public Task RemoveAllTenantAsync(string tenantId) { /* ... */ }
+}
+```
+
+Register it with one of the `WithExistingCache` overloads:
+
+```csharp
+builder.Services.AddTenantContextCache(cache =>
+{
+    cache
+        .WithTenantDataFetch<TenantInfo>(/* ... */)
+
+        // 1. Resolve from DI by type (registered for you only if you haven't registered it yourself)
+        .WithExistingCache<MyCache>();
+
+        // 2. Or pass a ready-made instance
+        // .WithExistingCache(myCacheInstance);
+
+        // 3. Or use a factory with access to the service provider
+        // .WithExistingCache(sp => sp.GetRequiredService<IMyCacheManager>().ForTenants());
+});
+```
+
+Everything else the library does is unaffected: tenant resolution, the middleware, the
+cache-first `ITenantInfoProvider`, and the per-request `ITenantCache` all keep working and simply
+call into your cache.
+
+What becomes **your** responsibility, since there is no FusionCache to do it:
+
+| Concern | With the built-in engine | With your own cache |
+|---|---|---|
+| Cache tiers | L1 in-memory + L2 distributed | whatever you implement |
+| TTLs | `WithL1TimeToLive` / `WithL2TimeToLive` | yours |
+| Key layout | `WithCacheKeyPrefix` → `tenant:acme:…` | yours — `tenantId` and `key` arrive unmodified |
+| Serialization | FusionCache (System.Text.Json) | yours |
+| Per-tenant bulk eviction | tag-based `RemoveByTagAsync` | your `RemoveAllTenantAsync` |
+| Stampede protection, fail-safe | built in | yours, if you want them |
+
+Because those options describe an engine that is no longer there, combining `WithExistingCache`
+with `WithCustomL2`, `WithL1TimeToLive`, `WithL2TimeToLive`, `WithCacheKeyPrefix` or
+`WithCacheName` throws at startup rather than silently ignoring them:
+
+```csharp
+// InvalidOperationException at AddTenantContextCache(...)
+cache.WithExistingCache<MyCache>()
+     .WithL1TimeToLive(TimeSpan.FromMinutes(5));   // no engine to apply this to
+```
+
+`WithTenantDataFetch<T>` is still required — supplying tenant data is the library's primary job.
+The instance is registered as a **singleton**, and the factory overload receives the application
+(root) `IServiceProvider`, so it should depend only on singleton services.
+
 ### Cache Key Prefix
 
 Every cache key and per-tenant tag starts with a prefix — `tenant` by default, e.g.
@@ -430,6 +497,7 @@ dotnet test  --collect:"XPlat Code Coverage"
 - [x] Tenant Context Resolution from Authentication Token 
 - [x] FusionCache-backed two-tier engine
 - [x] Bring-your-own L2 backend (any `IDistributedCache`, e.g. Redis)
+- [x] Bring-your-own cache engine (any `ITenantContextCache` implementation)
 - [x] Per-tenant bulk invalidation via FusionCache tagging
 - [ ] OpenTelemetry metrics
 - [ ] Cache preloading strategies

@@ -11,7 +11,7 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>tenant-context-cache</PackageId>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Title>TenantContextCache</Title>
     <Authors>eligo-social</Authors>
     <Description>A production-ready multi-tiered caching library for ASP.NET Core with automatic tenant context injection and multiple URL pattern support, powered by FusionCache (hybrid L1 in-memory + L2 distributed cache with stampede protection, fail-safe and tag-based invalidation). Bring any IDistributedCache backend (Redis, SQL Server, etc.) for the L2 layer.</Description>
@@ -21,6 +21,13 @@
     <RepositoryType>git</RepositoryType>
     <PackageTags>cache;caching;multitier;hybrid-cache;fusioncache;distributed-cache;tenant;aspnetcore;middleware</PackageTags>
     <PackageReleaseNotes>
+1.1.0 - bring your own cache. Supply an existing ITenantContextCache implementation via
+WithExistingCache(...) to replace the whole caching engine (not just the L2 layer): no
+FusionCache is registered and every tenant read/write goes through your cache, while tenant
+resolution, middleware and tenant-data injection keep working unchanged. Engine-only options
+(WithCustomL2, the TTLs, WithCacheKeyPrefix, WithCacheName) are rejected at startup when
+combined with it instead of being silently ignored.
+
 1.0.0 - first stable release. No hard Redis dependency: supply the L2 layer as any
 IDistributedCache via WithCustomL2(...). (0.0.1 was an earlier prototype that bundled
 StackExchange.Redis.)
