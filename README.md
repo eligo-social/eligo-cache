@@ -15,7 +15,8 @@ The two-tier caching engine is powered by [**FusionCache**](https://github.com/Z
   - L1: Fast in-memory cache (5 sec - 30 min TTL)
   - L2: Distributed cache via any `IDistributedCache` backend you supply — Redis, SQL Server, etc. (1 hour - 1 day TTL)
   - Automatic L1→L2 fallback on miss, cache stampede protection, and fail-safe
-  - Or **bring your own cache**: swap the whole engine for an existing `ITenantContextCache`
+  - Or **bring your own cache**: swap the whole engine for an existing `ICacheStore`
+  - **Keys are yours** either way — prefix, separator, or a complete `ICacheKeyBuilder`
 
 - **Tenant Resolution**
   - Opt-in per endpoint via a `[TenantContext]` annotation (recommended — no URL-shape guessing)
@@ -313,19 +314,27 @@ distributed layer.
 
 `WithCustomL2` replaces the *L2 layer* while the library still builds and drives a FusionCache
 around it. When you already have a caching component of your own — or you are not on FusionCache
-at all — `WithExistingCache` replaces the **whole engine** instead: implement
-`ITenantContextCache` and the library registers no FusionCache, routing every tenant read and
-write straight through your implementation.
+at all — `WithExistingCache` replaces the **whole engine** instead: implement `ICacheStore` and
+the library registers no FusionCache, routing every read and write straight through your
+implementation.
+
+`ICacheStore` is a plain key/value cache with no tenant vocabulary:
 
 ```csharp
-public class MyCache : ITenantContextCache
+public class MyCache : ICacheStore
 {
-    public Task<T> GetAsync<T>(string tenantId, string key) { /* ... */ }
-    public Task SetAsync<T>(string tenantId, string key, T value) { /* ... */ }
-    public Task RemoveAsync(string tenantId, string key) { /* ... */ }
-    public Task RemoveAllTenantAsync(string tenantId) { /* ... */ }
+    public Task<T> GetAsync<T>(string key) { /* ... */ }
+    public Task SetAsync<T>(string key, T value, IReadOnlyCollection<string> tags = null) { /* ... */ }
+    public Task RemoveAsync(string key) { /* ... */ }
+    public Task RemoveByTagAsync(string tag) { /* ... */ }
 }
 ```
+
+Everything tenant-aware lives *above* this interface. By the time a call reaches your store the
+tenant has already been folded into the key by the configured [key builder](#cache-keys), so your
+store never sees a tenant id — it just reads and writes the keys it is given. `tags` carries one
+opaque string per entry (the tenant tag), which is what makes per-tenant bulk eviction possible
+without the library ever enumerating keys.
 
 Register it with one of the `WithExistingCache` overloads:
 
@@ -342,28 +351,34 @@ builder.Services.AddTenantContextCache(cache =>
         // .WithExistingCache(myCacheInstance);
 
         // 3. Or use a factory with access to the service provider
-        // .WithExistingCache(sp => sp.GetRequiredService<IMyCacheManager>().ForTenants());
+        // .WithExistingCache(sp => sp.GetRequiredService<IMyCacheManager>().Store());
 });
 ```
 
 Everything else the library does is unaffected: tenant resolution, the middleware, the
 cache-first `ITenantInfoProvider`, and the per-request `ITenantCache` all keep working and simply
-call into your cache.
+call into your store. `ITenantContextCache` is still the injectable tenant-aware API — it is the
+library's own wrapper on both paths, and only the store underneath it changes.
 
 What becomes **your** responsibility, since there is no FusionCache to do it:
 
-| Concern | With the built-in engine | With your own cache |
+| Concern | With the built-in engine | With your own store |
 |---|---|---|
 | Cache tiers | L1 in-memory + L2 distributed | whatever you implement |
 | TTLs | `WithL1TimeToLive` / `WithL2TimeToLive` | yours |
-| Key layout | `WithCacheKeyPrefix` → `tenant:acme:…` | yours — `tenantId` and `key` arrive unmodified |
 | Serialization | FusionCache (System.Text.Json) | yours |
-| Per-tenant bulk eviction | tag-based `RemoveByTagAsync` | your `RemoveAllTenantAsync` |
+| Per-tenant bulk eviction | tag index | your `RemoveByTagAsync` |
 | Stampede protection, fail-safe | built in | yours, if you want them |
+| **Key layout** | **`WithCacheKeyPrefix` / `WithCacheKeyBuilder`** | **same — the library composes keys on both paths** |
 
-Because those options describe an engine that is no longer there, combining `WithExistingCache`
-with `WithCustomL2`, `WithL1TimeToLive`, `WithL2TimeToLive`, `WithCacheKeyPrefix` or
-`WithCacheName` throws at startup rather than silently ignoring them:
+If your backend has no tag index, note that the default key builder guarantees the tag is also a
+literal prefix of every key it covers, so a prefix scan (Redis `SCAN MATCH tag*`, dropping a
+per-tenant hash or logical database, …) is a valid implementation of `RemoveByTagAsync`. Throwing
+`NotSupportedException` is fine too, if you never call `RemoveAllTenantAsync`.
+
+Because they describe an engine that is no longer there, combining `WithExistingCache` with
+`WithCustomL2`, `WithL1TimeToLive`, `WithL2TimeToLive` or `WithCacheName` throws at startup rather
+than silently ignoring them:
 
 ```csharp
 // InvalidOperationException at AddTenantContextCache(...)
@@ -371,27 +386,68 @@ cache.WithExistingCache<MyCache>()
      .WithL1TimeToLive(TimeSpan.FromMinutes(5));   // no engine to apply this to
 ```
 
+The key options are *not* in that list — they stay valid, because keys are composed above the
+store either way:
+
+```csharp
+cache.WithExistingCache<MyCache>()
+     .WithCacheKeyPrefix("TENANT-CONTENT", "-");   // your store sees TENANT-CONTENT-acme-user-1
+```
+
 `WithTenantDataFetch<T>` is still required — supplying tenant data is the library's primary job.
 The instance is registered as a **singleton**, and the factory overload receives the application
 (root) `IServiceProvider`, so it should depend only on singleton services.
 
-### Cache Key Prefix
+### Cache Keys
 
-Every cache key and per-tenant tag starts with a prefix — `tenant` by default, e.g.
-`tenant:acme:tenant-info:TenantInfo` and the tag `tenant:acme`. Override it with
-`WithCacheKeyPrefix` to namespace entries when several apps share one Redis instance:
+Key layout belongs to you, not to the cache underneath. A single `ICacheKeyBuilder` turns a
+(tenant, key) pair into the flat key and group-eviction tag the store sees, and it sits above
+*both* engines — so these options apply whether you use the built-in FusionCache or bring your
+own `ICacheStore`.
+
+The default layout is `{prefix}{separator}{tenantId}{separator}{key}` with prefix `tenant` and
+separator `:` — e.g. `tenant:acme:tenant-info:TenantInfo` under the tag `tenant:acme`. Override
+either part with `WithCacheKeyPrefix`, to namespace entries when several apps share one Redis
+instance, or to match the convention of a cache you already run:
 
 ```csharp
 builder.Services.AddTenantContextCache(cache =>
 {
     cache
-        .WithCacheKeyPrefix("myapp")   // -> myapp:acme:tenant-info:TenantInfo, tag myapp:acme
+        .WithCacheKeyPrefix("myapp")                  // -> myapp:acme:user-1, tag myapp:acme
+        // .WithCacheKeyPrefix("TENANT-CONTENT", "-") // -> TENANT-CONTENT-acme-user-1
         .WithTenantDataFetch<TenantInfo>(/* ... */)
         .WithCustomL2(/* ... */);
 });
 ```
 
 When omitted, the current default (`tenant`) is kept, so existing keys are unchanged.
+
+The one key the library picks on your own behalf, rather than receiving from a caller, is the one
+tenant info is stored under — `tenant-info:{TenantInfoTypeName}`, before the tenant prefix is
+applied. Rename its leading segment with `WithTenantInfoKeyPrefix("ti")`.
+
+For a layout the prefix/separator pair cannot express, supply the whole builder:
+
+```csharp
+public class SuffixKeyBuilder : ICacheKeyBuilder
+{
+    public string BuildKey(string tenantId, string key) => $"{key}@{tenantId}";
+    public string TenantTag(string tenantId) => $"@{tenantId}";
+}
+
+cache.WithCacheKeyBuilder(new SuffixKeyBuilder());   // replaces WithCacheKeyPrefix
+```
+
+The one invariant is that `TenantTag` must be unique per tenant, so evicting by that tag never
+touches another tenant's entries. Making it a literal prefix of the keys it covers, as the default
+builder does, is optional but lets a store without a tag index implement `RemoveByTagAsync` as a
+prefix scan.
+
+> ⚠️ Neither segment is escaped. A tenant id containing the separator can collide with another
+> tenant's key — tenant `acme:x` + key `y` builds the same key as tenant `acme` + key `x:y`.
+> Tenant ids come from route values, headers, or subdomains, so supply your own `ICacheKeyBuilder`
+> if yours are not known to be separator-free.
 
 ### FusionCache Instance & Naming
 
@@ -497,7 +553,7 @@ dotnet test  --collect:"XPlat Code Coverage"
 - [x] Tenant Context Resolution from Authentication Token 
 - [x] FusionCache-backed two-tier engine
 - [x] Bring-your-own L2 backend (any `IDistributedCache`, e.g. Redis)
-- [x] Bring-your-own cache engine (any `ITenantContextCache` implementation)
+- [x] Bring-your-own cache engine (any `ICacheStore` implementation)
 - [x] Per-tenant bulk invalidation via FusionCache tagging
 - [ ] OpenTelemetry metrics
 - [ ] Cache preloading strategies

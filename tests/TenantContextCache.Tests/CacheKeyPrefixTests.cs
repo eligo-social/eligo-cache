@@ -50,10 +50,96 @@ public class CacheKeyPrefixTests
     }
 
     [Test]
+    public async Task WithCacheKeyPrefix_OverridesSeparator()
+    {
+        var (cache, l2) = BuildCache(c => c.WithCacheKeyPrefix("TENANT-CONTENT", "-"));
+
+        await cache.SetAsync("acme", "user-1", "value");
+
+        l2.Keys.Should().Contain(k => k.Contains("TENANT-CONTENT-acme-user-1"));
+    }
+
+    [Test]
     public void WithCacheKeyPrefix_RejectsBlank()
     {
         var act = () => BuildCache(c => c.WithCacheKeyPrefix("  "));
         act.Should().Throw<ArgumentException>();
+    }
+
+    [Test]
+    public void WithCacheKeyPrefix_RejectsBlankSeparator()
+    {
+        // A blank separator would run segments together, so tenant "a" + key "bc" and tenant
+        // "ab" + key "c" would collide.
+        var act = () => BuildCache(c => c.WithCacheKeyPrefix("myapp", ""));
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Test]
+    public async Task WithCacheKeyBuilder_TakesOverTheWholeLayout()
+    {
+        var (cache, l2) = BuildCache(c => c.WithCacheKeyBuilder(new SuffixKeyBuilder()));
+
+        await cache.SetAsync("acme", "user-1", "value");
+
+        l2.Keys.Should().Contain(k => k.Contains("user-1@acme"));
+        l2.Keys.Should().NotContain(k => k.Contains("tenant:acme:user-1"));
+    }
+
+    [Test]
+    public void WithCacheKeyBuilder_Throws_WhenCombinedWithWithCacheKeyPrefix()
+    {
+        var act = () => BuildCache(c => c
+            .WithCacheKeyPrefix("myapp")
+            .WithCacheKeyBuilder(new SuffixKeyBuilder()));
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*WithCacheKeyPrefix*");
+    }
+
+    [Test]
+    public async Task WithCacheKeyBuilder_TwiceIsNotAConflict_LastOneWins()
+    {
+        var (cache, l2) = BuildCache(c => c
+            .WithCacheKeyBuilder(new SuffixKeyBuilder())
+            .WithCacheKeyBuilder(new SuffixKeyBuilder()));
+
+        await cache.SetAsync("acme", "user-1", "value");
+
+        l2.Keys.Should().Contain(k => k.Contains("user-1@acme"));
+    }
+
+    [Test]
+    public void WithCacheKeyBuilder_RejectsNull()
+    {
+        var nullInstance = () => BuildCache(c => c.WithCacheKeyBuilder((ICacheKeyBuilder)null));
+        var nullFactory = () => BuildCache(c =>
+            c.WithCacheKeyBuilder((Func<IServiceProvider, ICacheKeyBuilder>)null));
+
+        nullInstance.Should().Throw<ArgumentNullException>();
+        nullFactory.Should().Throw<ArgumentNullException>();
+    }
+
+    /// <summary>Tenant as a key suffix rather than a prefix — a layout the built-in one cannot express.</summary>
+    private sealed class SuffixKeyBuilder : ICacheKeyBuilder
+    {
+        public string BuildKey(string tenantId, string key) => $"{key}@{tenantId}";
+        public string TenantTag(string tenantId) => $"@{tenantId}";
+    }
+
+    [Test]
+    public async Task WithTenantInfoKeyPrefix_OverridesTheLibrarysOwnKey()
+    {
+        var l2 = new InProcessDistributedCache();
+        var services = new ServiceCollection();
+        services.AddTenantContextCache(c => c
+            .WithTenantDataFetch<TenantStub>(_ => Task.FromResult(new TenantStub()))
+            .WithCustomL2(l2)
+            .WithTenantInfoKeyPrefix("ti"));
+
+        var sp = services.BuildServiceProvider();
+        await sp.GetRequiredService<ITenantInfoProvider>().GetTenantInfoAsync("acme");
+
+        l2.Keys.Should().Contain(k => k.Contains("tenant:acme:ti:TenantStub"));
     }
 
     [Test]
