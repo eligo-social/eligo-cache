@@ -26,7 +26,24 @@ builder.Services.AddTenantContextCache(cache =>
         .WithL2TimeToLive(TimeSpan.FromHours(1)) // L2: 1 hour in the distributed cache
         .WithTenantDataFetch<TenantInfo>((sp, tenantId) =>
             sp.GetRequiredService<ITenantService>().GetTenantByIdAsync(tenantId))
-        .WithCustomL2(_ => new RedisDistributedCache("localhost:6379")); // Bring your own IDistributedCache
+        .WithCustomL2(_ => new RedisDistributedCache("localhost:6379")) // Bring your own IDistributedCache
+
+        // Decide what a request gets when the middleware cannot attach a tenant. Returning null
+        // leaves the request exactly as it would be with no handler, which is what we want for
+        // TenantNotResolved: with the annotation-based resolver below, that fires on every
+        // endpoint that has no [TenantContext], so replying there would reject them all.
+        .WithTenantResolutionFailureHandler(failure => failure.Reason switch
+        {
+            TenantResolutionFailureReason.TenantNotFound =>
+                Results.NotFound(new { error = $"Unknown tenant '{failure.TenantId}'." }),
+
+            // The lookup itself broke (Redis down, database unreachable, …). Answering 503 keeps
+            // the failure out of the endpoint; returning null instead would rethrow it.
+            TenantResolutionFailureReason.TenantRetrievalFailed =>
+                Results.Problem("Tenant lookup is unavailable.", statusCode: 503),
+
+            _ => null,
+        });
 });
 
 var app = builder.Build();

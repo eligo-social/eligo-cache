@@ -477,6 +477,22 @@ app.UseTenantContextCache();
 builder.Services.AddLogging(c => c.AddConsole());
 ```
 
+To find out *which* of those it is rather than reading a null in the endpoint, register a failure
+handler — it is called with the reason (`TenantNotResolved`, `TenantNotFound` or
+`TenantRetrievalFailed`) whenever the middleware cannot attach a tenant:
+
+```csharp
+cache.WithTenantResolutionFailureHandler(failure =>
+{
+    logger.LogWarning("no tenant: {Reason} {TenantId} {Error}",
+        failure.Reason, failure.TenantId, failure.Exception?.Message);
+
+    // Observe only: null leaves the request behaving exactly as it would with no handler. The
+    // cast picks the synchronous overload — a lambda whose only return is a bare null cannot.
+    return (IResult)null;
+});
+```
+
 ### Cache hit rate is low
 
 **Cause**: L1 TTL is too short or endpoints are used infrequently

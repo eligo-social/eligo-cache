@@ -24,6 +24,7 @@ The two-tier caching engine is powered by [**FusionCache**](https://github.com/Z
   - HTTP headers
   - Subdomains
   - Custom patterns with cascade logic
+  - Reply with your own HTTP result when a tenant is unknown or its lookup fails
 
 - **Automatic Context Injection**
   - Tenant data resolved once per request
@@ -260,6 +261,52 @@ public class CustomTenantResolver : ITenantResolver
 
 app.UseTenantContextCacheWithResolver(new CustomTenantResolver());
 ```
+
+### Handling Failed Tenant Resolution
+
+By default the middleware is permissive: a request with no tenant, or with a tenant the data
+fetch doesn't know, simply continues down the pipeline with no tenant attached, and a fetch that
+throws propagates to your own exception handling. `WithTenantResolutionFailureHandler` lets you
+reply with an HTTP result instead, which short-circuits the pipeline:
+
+```csharp
+builder.Services.AddTenantContextCache(cache =>
+{
+    cache
+        .WithTenantDataFetch<TenantInfo>(/* ... */)
+        .WithCustomL2(/* ... */)
+        .WithTenantResolutionFailureHandler(failure => failure.Reason switch
+        {
+            TenantResolutionFailureReason.TenantNotFound =>
+                Results.NotFound(new { error = $"Unknown tenant '{failure.TenantId}'." }),
+
+            TenantResolutionFailureReason.TenantRetrievalFailed =>
+                Results.Problem("Tenant lookup is unavailable.", statusCode: 503),
+
+            // Not tenant-scoped — carry on.
+            _ => null,
+        });
+});
+```
+
+The handler receives a `TenantResolutionFailure` carrying the `HttpContext`, the `Reason`, the
+`TenantId` (null when nothing was resolved) and the `Exception` (set only for a retrieval
+failure). There is an `async` overload for handlers that need to await.
+
+| `Reason` | When | `TenantId` | `Exception` |
+|---|---|---|---|
+| `TenantNotResolved` | no tenant id in the request at all | `null` | `null` |
+| `TenantNotFound` | id resolved, but the data fetch produced nothing for it | set | `null` |
+| `TenantRetrievalFailed` | the cache-first retrieval threw | set | set |
+
+> ⚠️ **Return `null` for the reasons you don't want to intercept.** `TenantNotResolved` is the
+> normal outcome for every request that isn't tenant-scoped — with the annotation-based resolver
+> it fires on each endpoint without a `[TenantContext]`, and with the pattern-based ones on every
+> non-matching path. A handler that returns a result for it will reject those requests too.
+
+Returning `null` leaves that request exactly as it would have been without a handler. For
+`TenantRetrievalFailed` that means the original exception is rethrown with its stack intact, so
+your own exception middleware still sees it.
 
 ### L2 Cache Backend
 

@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using ZiggyCreatures.Caching.Fusion;
@@ -308,21 +309,112 @@ namespace TenantContextCache
         }
     }
 
+    /// <summary>Why the resolution middleware could not put a tenant on the request.</summary>
+    public enum TenantResolutionFailureReason
+    {
+        /// <summary>
+        /// No tenant id could be resolved from the request at all.
+        /// <para>
+        /// This is the <b>normal</b> outcome for any request that is not tenant-scoped — with the
+        /// annotation-based resolver it fires on every endpoint without a
+        /// <see cref="TenantContextAttribute"/>, and with the pattern-based ones on every path
+        /// that does not match. Handle it only if every request through this middleware is meant
+        /// to carry a tenant; otherwise return <c>null</c> and let the pipeline continue.
+        /// </para>
+        /// </summary>
+        TenantNotResolved,
+
+        /// <summary>
+        /// A tenant id was resolved, but the configured data fetch produced no tenant for it —
+        /// an unknown or deleted tenant. Typically a 404.
+        /// </summary>
+        TenantNotFound,
+
+        /// <summary>
+        /// Fetching the tenant threw. Covers the whole cache-first path, so both the cache read
+        /// and the configured data fetch behind it. Typically a 503 or 500.
+        /// </summary>
+        TenantRetrievalFailed
+    }
+
+    /// <summary>
+    /// What the resolution middleware knows about a failed tenant resolution, handed to the
+    /// handler configured with
+    /// <see cref="TenantContextCacheBuilder.WithTenantResolutionFailureHandler(Func{TenantResolutionFailure, IResult})"/>.
+    /// </summary>
+    public sealed class TenantResolutionFailure
+    {
+        public TenantResolutionFailure(
+            HttpContext httpContext,
+            TenantResolutionFailureReason reason,
+            string tenantId,
+            Exception exception)
+        {
+            HttpContext = httpContext;
+            Reason = reason;
+            TenantId = tenantId;
+            Exception = exception;
+        }
+
+        /// <summary>The request being resolved.</summary>
+        public HttpContext HttpContext { get; }
+
+        /// <summary>What went wrong.</summary>
+        public TenantResolutionFailureReason Reason { get; }
+
+        /// <summary>
+        /// The resolved tenant id, or <c>null</c> when <see cref="Reason"/> is
+        /// <see cref="TenantResolutionFailureReason.TenantNotResolved"/>.
+        /// </summary>
+        public string TenantId { get; }
+
+        /// <summary>
+        /// The exception that was thrown, set only when <see cref="Reason"/> is
+        /// <see cref="TenantResolutionFailureReason.TenantRetrievalFailed"/>.
+        /// </summary>
+        public Exception Exception { get; }
+    }
+
+    /// <summary>
+    /// Options for <see cref="TenantResolutionMiddleware"/>, registered as a singleton by
+    /// <see cref="TenantContextCacheExtensions.AddTenantContextCache"/>.
+    /// </summary>
+    public class TenantResolutionOptions
+    {
+        /// <summary>
+        /// Called when the middleware cannot put a tenant on the request. Returning an
+        /// <see cref="IResult"/> writes it to the response and short-circuits the pipeline;
+        /// returning <c>null</c> lets the request continue as if no handler were configured.
+        /// When unset, every failure continues (and a retrieval exception propagates).
+        /// </summary>
+        public Func<TenantResolutionFailure, Task<IResult>> FailureHandler { get; set; }
+    }
+
     /// <summary>
     /// Middleware that resolves the tenant for each request, fetches its tenant info through the
     /// multi-tier cache, and injects both the tenant id and the tenant info into
     /// <see cref="HttpContext.Items"/> for the rest of the pipeline (read back via
     /// <see cref="ITenantContextAccessor"/>).
+    /// <para>
+    /// When resolution fails, the handler on <see cref="TenantResolutionOptions"/> decides what
+    /// happens. Without one the behaviour is unchanged: an unresolved or unknown tenant simply
+    /// continues down the pipeline with no tenant attached, and a retrieval exception propagates.
+    /// </para>
     /// </summary>
     public class TenantResolutionMiddleware
     {
         private readonly RequestDelegate _next;
         private readonly ITenantResolver _tenantResolver;
+        private readonly TenantResolutionOptions _options;
 
-        public TenantResolutionMiddleware(RequestDelegate next, ITenantResolver tenantResolver)
+        public TenantResolutionMiddleware(
+            RequestDelegate next,
+            ITenantResolver tenantResolver,
+            TenantResolutionOptions options = null)
         {
             _next = next ?? throw new ArgumentNullException(nameof(next));
             _tenantResolver = tenantResolver ?? throw new ArgumentNullException(nameof(tenantResolver));
+            _options = options ?? new TenantResolutionOptions();
         }
 
         // tenantInfoProvider is injected per-request from the request services (scoped), so the
@@ -331,16 +423,72 @@ namespace TenantContextCache
         {
             var tenantId = _tenantResolver.ResolveTenant(context);
 
-            if (!string.IsNullOrEmpty(tenantId))
+            if (string.IsNullOrEmpty(tenantId))
             {
-                context.Items["TenantId"] = tenantId;
+                if (await TryHandleAsync(context, TenantResolutionFailureReason.TenantNotResolved, null, null))
+                    return;
 
-                var tenantInfo = await tenantInfoProvider.GetTenantInfoAsync(tenantId);
-                if (tenantInfo != null)
-                    context.Items[$"TenantInfo:{tenantInfoProvider.TenantInfoType.Name}"] = tenantInfo;
+                await _next(context);
+                return;
+            }
+
+            context.Items["TenantId"] = tenantId;
+
+            object tenantInfo = null;
+            ExceptionDispatchInfo retrievalFailure = null;
+            try
+            {
+                tenantInfo = await tenantInfoProvider.GetTenantInfoAsync(tenantId);
+            }
+            catch (Exception ex)
+            {
+                // Captured rather than handled inline so the handler runs outside the catch block
+                // and an unhandled failure can be rethrown with its original stack trace.
+                retrievalFailure = ExceptionDispatchInfo.Capture(ex);
+            }
+
+            if (retrievalFailure != null)
+            {
+                if (await TryHandleAsync(context, TenantResolutionFailureReason.TenantRetrievalFailed,
+                        tenantId, retrievalFailure.SourceException))
+                    return;
+
+                retrievalFailure.Throw();
+            }
+
+            if (tenantInfo == null)
+            {
+                if (await TryHandleAsync(context, TenantResolutionFailureReason.TenantNotFound, tenantId, null))
+                    return;
+            }
+            else
+            {
+                context.Items[$"TenantInfo:{tenantInfoProvider.TenantInfoType.Name}"] = tenantInfo;
             }
 
             await _next(context);
+        }
+
+        /// <summary>
+        /// Runs the configured handler, if any. Returns true when it produced a result, which has
+        /// been written to the response — the caller must then short-circuit.
+        /// </summary>
+        private async Task<bool> TryHandleAsync(
+            HttpContext context,
+            TenantResolutionFailureReason reason,
+            string tenantId,
+            Exception exception)
+        {
+            var handler = _options.FailureHandler;
+            if (handler == null)
+                return false;
+
+            var result = await handler(new TenantResolutionFailure(context, reason, tenantId, exception));
+            if (result == null)
+                return false;
+
+            await result.ExecuteAsync(context);
+            return true;
         }
     }
 
@@ -443,6 +591,7 @@ namespace TenantContextCache
     {
         private readonly IServiceCollection _services;
         private readonly CacheConfiguration _config = new();
+        private readonly TenantResolutionOptions _resolutionOptions = new();
         private Func<IServiceProvider, IDistributedCache> _customL2Factory;
         private Func<IServiceProvider, ICacheStore> _existingStoreFactory;
         private Func<IServiceProvider, ICacheKeyBuilder> _keyBuilderFactory;
@@ -607,6 +756,52 @@ namespace TenantContextCache
         }
 
         /// <summary>
+        /// Handle requests where the middleware cannot put a tenant on the request: no tenant id
+        /// in the request, no tenant found for the id, or the retrieval throwing. The handler
+        /// returns the HTTP result to reply with, which short-circuits the pipeline.
+        /// <para>
+        /// Return <c>null</c> for a failure you do not want to intercept and that request carries
+        /// on exactly as it would without a handler — which matters for
+        /// <see cref="TenantResolutionFailureReason.TenantNotResolved"/>, the normal outcome for
+        /// every request that is not tenant-scoped:
+        /// </para>
+        /// <code>
+        /// .WithTenantResolutionFailureHandler(failure => failure.Reason switch
+        /// {
+        ///     TenantResolutionFailureReason.TenantNotFound       => Results.NotFound($"Unknown tenant '{failure.TenantId}'."),
+        ///     TenantResolutionFailureReason.TenantRetrievalFailed => Results.Problem("Tenant lookup failed.", statusCode: 503),
+        ///     _                                                   => null,
+        /// })
+        /// </code>
+        /// <para>
+        /// Note that an unhandled <see cref="TenantResolutionFailureReason.TenantRetrievalFailed"/>
+        /// — no handler, or one that returned <c>null</c> — rethrows the original exception, so
+        /// your own exception middleware still sees it.
+        /// </para>
+        /// </summary>
+        public TenantContextCacheBuilder WithTenantResolutionFailureHandler(
+            Func<TenantResolutionFailure, IResult> handler)
+        {
+            if (handler == null)
+                throw new ArgumentNullException(nameof(handler));
+
+            return WithTenantResolutionFailureHandler(failure => Task.FromResult(handler(failure)));
+        }
+
+        /// <summary>
+        /// Handle failed tenant resolution with an asynchronous handler — use this overload when
+        /// deciding the response needs to await something (a lookup, a log write, …). See
+        /// <see cref="WithTenantResolutionFailureHandler(Func{TenantResolutionFailure, IResult})"/>
+        /// for the semantics.
+        /// </summary>
+        public TenantContextCacheBuilder WithTenantResolutionFailureHandler(
+            Func<TenantResolutionFailure, Task<IResult>> handler)
+        {
+            _resolutionOptions.FailureHandler = handler ?? throw new ArgumentNullException(nameof(handler));
+            return this;
+        }
+
+        /// <summary>
         /// Use a custom L2 (distributed) cache implementation. The instance must implement
         /// <see cref="IDistributedCache"/> — FusionCache's abstraction for the distributed layer.
         /// </summary>
@@ -718,6 +913,10 @@ namespace TenantContextCache
                     "WithCacheKeyBuilder(...) to use the default prefix-based layout.");
 
             _services.AddSingleton(_config);
+
+            // Picked up by TenantResolutionMiddleware, which every UseTenantContextCache*
+            // overload registers, so the failure handler applies whichever resolver is used.
+            _services.AddSingleton(_resolutionOptions);
 
             // Key layout is the library's on both paths, so it is registered before the engine
             // choice and applies identically to a custom store and the built-in one.

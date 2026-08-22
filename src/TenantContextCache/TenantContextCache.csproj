@@ -21,7 +21,14 @@
     <RepositoryType>git</RepositoryType>
     <PackageTags>cache;caching;multitier;hybrid-cache;fusioncache;distributed-cache;tenant;aspnetcore;middleware</PackageTags>
     <PackageReleaseNotes>
-2.0.0 - caller-controlled cache keys. BREAKING: WithExistingCache(...) now takes an ICacheStore —
+2.0.0 - caller-controlled cache keys, plus a tenant-resolution failure handler.
+
+WithTenantResolutionFailureHandler(...) replies with an IResult when the middleware cannot put a
+tenant on the request — no tenant id resolved, no tenant found for it, or the retrieval throwing —
+short-circuiting the pipeline. Returning null from the handler leaves that request behaving
+exactly as before, which keeps requests that are simply not tenant-scoped flowing through.
+
+BREAKING: WithExistingCache(...) now takes an ICacheStore —
 a plain key/value cache with no tenant parameter — instead of an ITenantContextCache. Keys are
 composed above the store by an ICacheKeyBuilder, so WithCacheKeyPrefix(prefix, separator) and the
 new WithCacheKeyBuilder(...) shape the keys your own cache sees, and are no longer rejected when
